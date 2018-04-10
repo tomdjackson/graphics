@@ -29,6 +29,8 @@ Light light;
 
 struct Camera{
   float focalLength;
+  float aperture;
+  float dof_length;
   vec4 position;
   mat4 rotation;
 };
@@ -75,6 +77,8 @@ void InitializeStructs(){
   /* Camera */
   camera.position = vec4(0, 0, -3, 1.0);
   camera.focalLength = SCREEN_WIDTH;
+  camera.aperture = 0.5;
+  camera.dof_length = 1;
   y_rotation(0);
 
   /* Light */
@@ -96,9 +100,19 @@ bool ClosestIntersection(vec4 start, vec4 dir, const vector<Triangle>& triangles
     vec3 b = vec3(start.x - v0.x, start.y - v0.y, start.z - v0.z);
 
     vec3 d = vec3(dir.x, dir.y, dir.z);
-
     mat3 A(-d, e1, e2);
-    vec3 x = glm::inverse( A ) * b;
+    vec3 x = vec3(-1,-1,-1);
+
+    float detA = glm::determinant(A);
+    float det = glm::determinant(mat3(b, e1, e2));
+    float t = det/ detA;
+    if(t>=0){
+      det = glm::determinant(mat3(-d, b, e2));
+      float u = det / detA;
+      det = glm::determinant(mat3(-d, e1, b));
+      float v = det/detA;
+      x = vec3(t, u, v);
+    }
 
     if(x.x >= 0 && x.y >= 0 && x.z >= 0 && (x.y + x.z) <= 1 && x.x < closestIntersection.distance){
       intersect = true;
@@ -110,26 +124,32 @@ bool ClosestIntersection(vec4 start, vec4 dir, const vector<Triangle>& triangles
   return intersect;
 }
 
-vec3 DirectLight( const Intersection& i, const vector<Triangle>& triangles, bool& inShadow ){
+vec3 DirectLight( const Intersection& i, const vector<Triangle>& triangles){
   Triangle triangle = triangles[i.triangleIndex];
-  vec4 r = normalize(light.position - i.position);
-  float length_r = glm::length(light.position - i.position);
+  vec3 D = vec3(0,0,0);
+  for(float x = -0.1; x < 0.1; x+=0.02){
+    for(float z = -0.1; z < 0.1; z+=0.02){
+      vec4 light_position = vec4(light.position.x+x, light.position.y, light.position.z+z, 1.0);
+      vec4 r = normalize(light_position - i.position);
+      float length_r = glm::length(light_position - i.position);
 
-  Intersection intersection;
-  if (ClosestIntersection(i.position + 0.001f*r, r, triangles, intersection)){
-    if(length_r >= intersection.distance) inShadow = true;
-    else inShadow = false;
-  }else inShadow = false;
+      Intersection intersection;
+      if (ClosestIntersection(i.position + 0.001f*r, r, triangles, intersection) && (length_r >= intersection.distance)){
+        D += vec3(0,0,0);
+      }
+      else{
 
-  float A = 4*PI*length_r*length_r;
-  vec3 B = light.color / A;
+        float A = 4*PI*length_r*length_r;
+        vec3 B = light.color / A;
 
-  float C = dot(r, triangle.normal);
-  C = glm::max(C, 0.f);
+        float C = dot(r, triangle.normal);
+        C = glm::max(C, 0.f);
 
-  vec3 D = B * C;
-
-  return (D);
+        D += B * C;
+      }
+    }
+  }
+  return (D*0.01f);
 }
 
 void Draw(screen* screen, const vector<Triangle>& triangles){
@@ -138,22 +158,32 @@ void Draw(screen* screen, const vector<Triangle>& triangles){
 
   for(int x = 0; x<SCREEN_WIDTH; x++){
     for(int y = 0; y<SCREEN_HEIGHT; y++){
-      vec4 start = camera.position;
-      vec4 dir = vec4(x-SCREEN_WIDTH/2, y-SCREEN_HEIGHT/2, camera.focalLength, 1) ;
+      vec3 totalLight = vec3( 0, 0, 0 );
+      vec3 color = vec3( 0, 0, 0 );
       Intersection closestIntersection;
 
-      vec3 indirectLight = 0.5f*vec3( 1, 1, 1 );
-      vec3 directLight = vec3( 0, 0, 0 );
-      vec3 color = vec3( 0, 0, 0 );
+      for(int i = 0; i<5; i++){
+        vec4 start = camera.position;
 
-      if (ClosestIntersection(start, camera.rotation * dir, triangles, closestIntersection)){
-        bool inShadow;
-        directLight = DirectLight(closestIntersection, triangles, inShadow);
-        if (inShadow) directLight = vec3(0,0,0);
-        vec3 totalLight = directLight + indirectLight;
-        color = triangles[closestIntersection.triangleIndex].color * totalLight;
-        PutPixelSDL(screen, x, y, color);
+        //calculate offset of rays for anti aliasing
+        float x_off=0.0, y_off = 0.0;
+        if(i%2 != 0) x_off = -0.25;
+        else if(i!=0) x_off = 0.25;
+        if(i > 2) y_off = -0.25;
+        else if(i!=0) y_off = 0.25;
+
+        vec4 dir = vec4(x_off+x-SCREEN_WIDTH/2, y_off+y-SCREEN_HEIGHT/2, camera.focalLength, 1) ;
+
+        if (ClosestIntersection(start, camera.rotation * dir, triangles, closestIntersection)){
+          vec3 indirectLight = 0.5f*vec3( 1, 1, 1 );
+          vec3 directLight = vec3(0,0,0);
+          directLight = DirectLight(closestIntersection, triangles);
+          totalLight = vec3(0,0,0);
+          totalLight = directLight + indirectLight;
+          color += triangles[closestIntersection.triangleIndex].color * totalLight;
+        }
       }
+      PutPixelSDL(screen, x, y, color*0.2f);
     }
   }
 }
@@ -205,7 +235,7 @@ void Update(){
 
 void y_rotation(float angle){
   camera.rotation = mat4(cos(angle) , 0, sin(angle), 0,
-                         0          , 1, 0         , 0,
-                         -sin(angle), 0, cos(angle), 0,
-                         0          , 0, 0         , 1);
+  0          , 1, 0         , 0,
+  -sin(angle), 0, cos(angle), 0,
+  0          , 0, 0         , 1);
 }
