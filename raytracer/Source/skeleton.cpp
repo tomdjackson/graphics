@@ -1,5 +1,5 @@
 #include <iostream>
-#include<math.h>
+#include <math.h>
 #include <glm/glm.hpp>
 #include <SDL.h>
 #include "SDLauxiliary.h"
@@ -197,7 +197,7 @@ void Update(){
   float dt = float(t2-t);
   t = t2;
   /*Good idea to remove this*/
-//  std::cout << "Render time: " << dt << " ms." << std::endl;
+  std::cout << "Render time: " << dt << " ms." << std::endl;
 
   //camera movement
   const Uint8 *keystate = SDL_GetKeyboardState( 0 );
