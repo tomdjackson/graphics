@@ -152,7 +152,7 @@ vec3 DirectLight( const Intersection& i, const vector<Triangle>& triangles){
   return (D*0.01f);
 }
 
-void Draw(screen* screen, const vector<Triangle>& triangles){
+void Draw(screen* screen, vector<Triangle>& triangles){
   /* Clear buffer */
   memset(screen->buffer, 0, screen->height*screen->width*sizeof(uint32_t));
 
@@ -197,7 +197,7 @@ void Update(){
   float dt = float(t2-t);
   t = t2;
   /*Good idea to remove this*/
-  std::cout << "Render time: " << dt << " ms." << std::endl;
+//  std::cout << "Render time: " << dt << " ms." << std::endl;
 
   //camera movement
   const Uint8 *keystate = SDL_GetKeyboardState( 0 );
