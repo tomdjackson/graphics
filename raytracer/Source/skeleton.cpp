@@ -17,6 +17,16 @@ using glm::mat4;
 #define SCREEN_HEIGHT 300
 #define FULLSCREEN_MODE false
 #define PI 3.14159265
+const int maxReflectionDepth = 5;
+
+/* TODO: Extension ideas
+* 1. Fresnel Effect
+* 2. Spheres
+* 3. General Models
+* 4. Textures
+* 5. Parallelism
+* 6. anit-aliasing
+*/
 
 /* ----------------------------------------------------------------------------*/
 /* STRUCTS                                                                   */
@@ -50,7 +60,10 @@ void Update();
 void Draw(screen* screen, const vector<Triangle>& triangles);
 bool ClosestIntersection(vec4 start, vec4 dir, const vector<Triangle>& triangles, Intersection& closestIntersection );
 void y_rotation(float deg);
-vec3 DirectLight( const Intersection& i, const vector<Triangle>& triangles, bool& shadow);
+vec3 DirectLight( const Intersection& i, const vector<Triangle>& triangles );
+vec3 get_color(const Intersection& i, const vector<Triangle>& triangles, vec4 dir, int depth);
+vec4 reflect(vec4 normal, vec4 dir);
+vec4 refract(vec4 normal, vec4 dir);
 
 /* ----------------------------------------------------------------------------*/
 
@@ -67,7 +80,7 @@ int main( int argc, char* argv[] ){
     SDL_Renderframe(screen);
   }
 
-  SDL_SaveImage( screen, "screenshot.bmp" );
+  SDL_SaveImage( screen, "screenshot.png" );
 
   KillSDL(screen);
   return 0;
@@ -77,8 +90,8 @@ void InitializeStructs(){
   /* Camera */
   camera.position = vec4(0, 0, -3, 1.0);
   camera.focalLength = SCREEN_WIDTH;
-  camera.aperture = 0.5;
-  camera.dof_length = 1;
+  camera.aperture = 0.05;
+  camera.dof_length = 0.01;
   y_rotation(0);
 
   /* Light */
@@ -91,34 +104,30 @@ bool ClosestIntersection(vec4 start, vec4 dir, const vector<Triangle>& triangles
   closestIntersection.distance = std::numeric_limits<float>::max();
 
   for(int i=0; i<triangles.size(); i++){
-    vec4 v0 = triangles[i].v0;
-    vec4 v1 = triangles[i].v1;
-    vec4 v2 = triangles[i].v2;
-
-    vec3 e1 = vec3(v1.x - v0.x, v1.y - v0.y, v1.z - v0.z);
-    vec3 e2 = vec3(v2.x - v0.x, v2.y - v0.y, v2.z - v0.z);
-    vec3 b = vec3(start.x - v0.x, start.y - v0.y, start.z - v0.z);
+    vec3 e1 = vec3(triangles[i].v1.x - triangles[i].v0.x, triangles[i].v1.y - triangles[i].v0.y, triangles[i].v1.z - triangles[i].v0.z);
+    vec3 e2 = vec3(triangles[i].v2.x - triangles[i].v0.x, triangles[i].v2.y - triangles[i].v0.y, triangles[i].v2.z - triangles[i].v0.z);
+    vec3 b = vec3(start.x - triangles[i].v0.x, start.y - triangles[i].v0.y, start.z - triangles[i].v0.z);
 
     vec3 d = vec3(dir.x, dir.y, dir.z);
     mat3 A(-d, e1, e2);
-    vec3 x = vec3(-1,-1,-1);
 
     float detA = glm::determinant(A);
     float det = glm::determinant(mat3(b, e1, e2));
-    float t = det/ detA;
-    if(t>=0){
+    float t = det / detA;
+
+    if(t>=0 && t < closestIntersection.distance){
       det = glm::determinant(mat3(-d, b, e2));
       float u = det / detA;
-      det = glm::determinant(mat3(-d, e1, b));
-      float v = det/detA;
-      x = vec3(t, u, v);
-    }
-
-    if(x.x >= 0 && x.y >= 0 && x.z >= 0 && (x.y + x.z) <= 1 && x.x < closestIntersection.distance){
-      intersect = true;
-      closestIntersection.triangleIndex = i;
-      closestIntersection.distance = x.x;
-      closestIntersection.position = v0 + (x.y * vec4(e1.x,e1.y,e1.z, 0)) + (x.z * vec4(e2.x,e2.y,e2.z, 0));
+      if(u > 0 ){
+        det = glm::determinant(mat3(-d, e1, b));
+        float v = det/detA;
+        if(v >= 0 && (u + v) <= 1){
+          intersect = true;
+          closestIntersection.triangleIndex = i;
+          closestIntersection.distance = t;
+          closestIntersection.position = triangles[i].v0 + (u * vec4(e1.x,e1.y,e1.z, 0)) + (v * vec4(e2.x,e2.y,e2.z, 0));
+        }
+      }
     }
   }
   return intersect;
@@ -127,18 +136,28 @@ bool ClosestIntersection(vec4 start, vec4 dir, const vector<Triangle>& triangles
 vec3 DirectLight( const Intersection& i, const vector<Triangle>& triangles){
   Triangle triangle = triangles[i.triangleIndex];
   vec3 D = vec3(0,0,0);
-  for(float x = -0.1; x < 0.1; x+=0.02){
-    for(float z = -0.1; z < 0.1; z+=0.02){
+
+  for(float x = -0.1; x < 0.1; x+=0.04){
+    for(float z = -0.1; z < 0.1; z+=0.04){
       vec4 light_position = vec4(light.position.x+x, light.position.y, light.position.z+z, 1.0);
       vec4 r = normalize(light_position - i.position);
       float length_r = glm::length(light_position - i.position);
 
       Intersection intersection;
+      //TODO: update this to absorb a small amount of the light
       if (ClosestIntersection(i.position + 0.001f*r, r, triangles, intersection) && (length_r >= intersection.distance)){
-        D += vec3(0,0,0);
+        if (triangles[intersection.triangleIndex].material == Glass){
+          float A = 4*PI*length_r*length_r;
+          vec3 B = light.color / A;
+
+          float C = dot(r, triangle.normal);
+          C = glm::max(C, 0.f);
+
+          D += 0.8f * (B * C);
+        }
+        else D += vec3(0,0,0);
       }
       else{
-
         float A = 4*PI*length_r*length_r;
         vec3 B = light.color / A;
 
@@ -149,46 +168,95 @@ vec3 DirectLight( const Intersection& i, const vector<Triangle>& triangles){
       }
     }
   }
-  return (D*0.01f);
+  return (D*0.04f);
 }
 
-void Draw(screen* screen, vector<Triangle>& triangles){
+vec4 reflect(vec4 normal, vec4 dir){
+  return dir - 2 * dot(dir, normal) * normal;
+}
+
+vec4 refract(vec4 normal, vec4 dir){
+  float dot = glm::dot(normal, dir);
+  float n1 = 1.0f;
+  float n2 = 1.5f;
+  if(dot < 0){
+    dot = - dot;
+  }
+  else{
+    std::swap(n1, n2);
+    normal = -normal;
+  }
+  float n = n1 / n2;
+  float k = (1-(n*n) * (1-(dot*dot)));
+  if(k < 0){
+    printf("here\n");
+    return reflect(normal, dir);
+  }
+  else{
+    return n*dir + (n * dot - sqrt(k))*normal;;
+  }
+}
+
+vec3 get_color(const Intersection& i, const vector<Triangle>& triangles, vec4 dir, int depth ){
+  Triangle triangle = triangles[i.triangleIndex];
+  if (triangle.material == Diff){
+    vec3 indirectLight = 0.5f*vec3( 1, 1, 1 );
+    vec3 directLight = DirectLight(i, triangles);
+    vec3 totalLight = directLight + indirectLight;
+    return triangle.color * totalLight;
+  }
+
+  else if((triangle.material == Spec) && (depth < maxReflectionDepth)){
+    //reflect all light
+    vec4 new_dir = reflect(triangles[i.triangleIndex].normal, dir);
+    Intersection closestIntersection;
+    if(ClosestIntersection(i.position+(0.001f*new_dir), new_dir, triangles, closestIntersection)){
+      return 0.8f * get_color(closestIntersection, triangles, new_dir, depth + 1);
+    }
+    else return vec3(0,0,0);
+  }
+
+  else if (triangle.material == Glass && (depth < maxReflectionDepth)){
+    // refract/reflect
+    vec4 new_dir = refract(triangles[i.triangleIndex].normal, dir);
+    Intersection closestIntersection;
+    if(ClosestIntersection(i.position+(0.001f*new_dir), new_dir, triangles, closestIntersection)){
+      return 0.9f * get_color(closestIntersection, triangles, new_dir, depth + 1);
+    }
+    else return vec3(0,0,0);
+  }
+  else return vec3(0,0,0);
+}
+
+void Draw(screen* screen, const vector<Triangle>& triangles){
   /* Clear buffer */
   memset(screen->buffer, 0, screen->height*screen->width*sizeof(uint32_t));
 
   for(int x = 0; x<SCREEN_WIDTH; x++){
     for(int y = 0; y<SCREEN_HEIGHT; y++){
-      vec3 totalLight = vec3( 0, 0, 0 );
+      // printf("(%d, %d)", x, y);
       vec3 color = vec3( 0, 0, 0 );
       Intersection closestIntersection;
 
-      for(int i = 0; i<5; i++){
-        vec4 start = camera.position;
+      for (float i = -camera.aperture; i < camera.aperture; i+=0.01){
+        for(float j = -camera.aperture; j < camera.aperture; j+=0.01){
+          vec4 start = camera.position;
+          vec4 dir = camera.rotation * vec4(x-SCREEN_WIDTH/2, y-SCREEN_HEIGHT/2, camera.focalLength, 1);
+          vec4 ray_intersection = start + (dir * camera.dof_length);
+          start.x += i;
+          start.y += j;
+          dir = ray_intersection - start;
 
-        //calculate offset of rays for anti aliasing
-        float x_off=0.0, y_off = 0.0;
-        if(i%2 != 0) x_off = -0.25;
-        else if(i!=0) x_off = 0.25;
-        if(i > 2) y_off = -0.25;
-        else if(i!=0) y_off = 0.25;
-
-        vec4 dir = vec4(x_off+x-SCREEN_WIDTH/2, y_off+y-SCREEN_HEIGHT/2, camera.focalLength, 1) ;
-
-        if (ClosestIntersection(start, camera.rotation * dir, triangles, closestIntersection)){
-          vec3 indirectLight = 0.5f*vec3( 1, 1, 1 );
-          vec3 directLight = vec3(0,0,0);
-          directLight = DirectLight(closestIntersection, triangles);
-          totalLight = vec3(0,0,0);
-          totalLight = directLight + indirectLight;
-          color += triangles[closestIntersection.triangleIndex].color * totalLight;
+          if (ClosestIntersection(start, dir, triangles, closestIntersection)){
+            color += get_color(closestIntersection, triangles, dir, 0);
+          }
         }
       }
-      PutPixelSDL(screen, x, y, color*0.2f);
+      PutPixelSDL(screen, x, y, color*0.01f);
     }
   }
 }
 
-/* TODO Rotation not quite working correctly */
 float yaw = 0.0;
 void Update(){
   static int t = SDL_GetTicks();
