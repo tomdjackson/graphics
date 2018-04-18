@@ -17,15 +17,24 @@ using glm::mat4;
 #define SCREEN_HEIGHT 300
 #define FULLSCREEN_MODE false
 #define PI 3.14159265
-const int maxReflectionDepth = 5;
 
 /* TODO: Extension ideas
-* 1. Fresnel Effect
+* 1. Global Illumination
 * 2. Spheres
 * 3. General Models
 * 4. Textures
 * 5. Parallelism
-* 6. anit-aliasing
+* 6. anti-aliasing
+* 7. Phong shading
+*/
+
+/* Extensions DONE
+* 1. Soft Shadows
+* 2. Specular Surfaces
+* 3. Glass
+* 4. Cramer's Rule
+* 5. Depth of Field
+* 6. Fresnel Effect ---- Needs Checking? Looks a bit strange
 */
 
 /* ----------------------------------------------------------------------------*/
@@ -34,6 +43,7 @@ const int maxReflectionDepth = 5;
 struct Light{
   vec4 position;
   vec3 color;
+  float width;
 };
 Light light;
 
@@ -41,8 +51,8 @@ struct Camera{
   float focalLength;
   float aperture;
   float dof_length;
+  float angle;
   vec4 position;
-  mat4 rotation;
 };
 Camera camera;
 
@@ -52,6 +62,13 @@ struct Intersection{
   int triangleIndex;
 };
 
+struct Options{
+  int max_depth;
+  int num_dof_rays;
+  int num_light_rays;
+};
+Options options;
+
 /* ----------------------------------------------------------------------------*/
 /* FUNCTIONS                                                                   */
 
@@ -59,17 +76,20 @@ void InitializeStructs();
 void Update();
 void Draw(screen* screen, const vector<Triangle>& triangles);
 bool ClosestIntersection(vec4 start, vec4 dir, const vector<Triangle>& triangles, Intersection& closestIntersection );
-void y_rotation(float deg);
 vec3 DirectLight( const Intersection& i, const vector<Triangle>& triangles );
 vec3 get_color(const Intersection& i, const vector<Triangle>& triangles, vec4 dir, int depth);
 vec4 reflect(vec4 normal, vec4 dir);
-vec4 refract(vec4 normal, vec4 dir);
+vec4 refract(vec4 normal, vec4 dir, float& n, float& k);
+float fresnel(vec4 normal, vec4 dir, const Intersection& i, float& n, float& k);
+mat4 y_rotation(float deg);
+vector<vec4> RandCameraPoints();
+vector<vec4> RandLightPoints();
 
 /* ----------------------------------------------------------------------------*/
 
 int main( int argc, char* argv[] ){
-  screen *screen = InitializeSDL( SCREEN_WIDTH, SCREEN_HEIGHT, FULLSCREEN_MODE );
   InitializeStructs();
+  screen *screen = InitializeSDL( SCREEN_WIDTH, SCREEN_HEIGHT, FULLSCREEN_MODE );
 
   vector<Triangle> triangles;
   LoadTestModel(triangles);
@@ -78,9 +98,8 @@ int main( int argc, char* argv[] ){
     Update();
     Draw(screen, triangles);
     SDL_Renderframe(screen);
+    SDL_SaveImage( screen, "screenshot.png" );
   }
-
-  SDL_SaveImage( screen, "screenshot.png" );
 
   KillSDL(screen);
   return 0;
@@ -88,15 +107,21 @@ int main( int argc, char* argv[] ){
 
 void InitializeStructs(){
   /* Camera */
-  camera.position = vec4(0, 0, -3, 1.0);
+  camera.position = vec4(0.f, 0.f, -3.f, 1.0f);
   camera.focalLength = SCREEN_WIDTH;
-  camera.aperture = 0.05;
-  camera.dof_length = 0.01;
-  y_rotation(0);
+  camera.aperture = 0.01;
+  camera.dof_length = 0.008;
+  camera.angle = 0;
 
   /* Light */
-  light.position = vec4( 0, -0.5, -0.7, 1.0 );
+  light.position = vec4( 0, - 0.5, -0.7, 1.0 );
   light.color = 14.f * vec3( 1, 1, 1 );
+  light.width = 0.2f;
+
+  /* Options */
+  options.max_depth = 5;
+  options.num_dof_rays = 2;
+  options.num_light_rays = 1;
 }
 
 bool ClosestIntersection(vec4 start, vec4 dir, const vector<Triangle>& triangles, Intersection& closestIntersection){
@@ -133,72 +158,90 @@ bool ClosestIntersection(vec4 start, vec4 dir, const vector<Triangle>& triangles
   return intersect;
 }
 
+vector<vec4> RandLightPoints(){
+  vector<vec4> points;
+  if(options.num_light_rays == 1){
+    points.push_back(light.position);
+  }
+  else{
+    for(int i = 0; i < options.num_light_rays; i++){
+      float x = light.position.x - ((float)rand() / ((float)RAND_MAX / light.width) - (light.width/2.0f));
+      float z = light.position.z + ((float)rand() / ((float)RAND_MAX / light.width) - (light.width/2.0f));
+      points.push_back(vec4(x, light.position.y, z, 1.0));
+    }
+  }
+  return points;
+}
+
 vec3 DirectLight( const Intersection& i, const vector<Triangle>& triangles){
   Triangle triangle = triangles[i.triangleIndex];
   vec3 D = vec3(0,0,0);
+  vector<vec4> points = RandLightPoints();
+  for(int x = 0; x < points.size(); x++){
+    vec4 r = normalize(points[x] - i.position);
+    float length_r = glm::length(points[x] - i.position);
 
-  for(float x = -0.1; x < 0.1; x+=0.04){
-    for(float z = -0.1; z < 0.1; z+=0.04){
-      vec4 light_position = vec4(light.position.x+x, light.position.y, light.position.z+z, 1.0);
-      vec4 r = normalize(light_position - i.position);
-      float length_r = glm::length(light_position - i.position);
-
-      Intersection intersection;
-      //TODO: update this to absorb a small amount of the light
-      if (ClosestIntersection(i.position + 0.001f*r, r, triangles, intersection) && (length_r >= intersection.distance)){
-        if (triangles[intersection.triangleIndex].material == Glass){
-          float A = 4*PI*length_r*length_r;
-          vec3 B = light.color / A;
-
-          float C = dot(r, triangle.normal);
-          C = glm::max(C, 0.f);
-
-          D += 0.8f * (B * C);
-        }
-        else D += vec3(0,0,0);
-      }
-      else{
+    Intersection intersection;
+    //in shadow
+    if (ClosestIntersection(i.position + 0.001f*r, r, triangles, intersection) && (length_r >= intersection.distance)){
+      //glass shadow
+      if (triangles[intersection.triangleIndex].material == Glass){
         float A = 4*PI*length_r*length_r;
         vec3 B = light.color / A;
 
-        float C = dot(r, triangle.normal);
+        float C = glm::dot(r, triangle.normal);
         C = glm::max(C, 0.f);
 
-        D += B * C;
+        D += 0.8f * (B * C);
       }
+      else D += vec3(0,0,0);
+    }
+    else{
+      float A = 4*PI*length_r*length_r;
+      vec3 B = light.color / A;
+
+      float C = glm::dot(r, triangle.normal);
+      C = glm::max(C, 0.f);
+
+      D += B * C;
     }
   }
-  return (D*0.04f);
+  float scale = 1.f/options.num_light_rays;
+  return (D*scale);
 }
 
 vec4 reflect(vec4 normal, vec4 dir){
-  return dir - 2 * dot(dir, normal) * normal;
+  return dir - 2 * glm::dot(dir, normal) * normal;
 }
 
-vec4 refract(vec4 normal, vec4 dir){
+vec4 refract (vec4 normal, vec4 dir, float& n, float& k){
+  float dot = glm::dot(normal, dir);
+  return n*dir + (n * dot - sqrt(k))*normal;;
+}
+
+float fresnel(vec4 normal, vec4 dir, float& n, float& k){
+  float kr = 0.0f;
   float dot = glm::dot(normal, dir);
   float n1 = 1.0f;
   float n2 = 1.5f;
-  if(dot < 0){
-    dot = - dot;
-  }
+  if(dot > 0) std::swap(n1, n2);
+  n = n1/n2;
+  k = n * sqrt(std::max(0.f, 1-dot*dot));
+  //total internal refrlection
+  if(k >= 1) kr = 1;
   else{
-    std::swap(n1, n2);
-    normal = -normal;
+    float cost = sqrt(std::max(0.f, 1 - k * k));
+    dot = fabsf(dot);
+    float Rs = ((n1 * dot) - (n2 * cost)) / ((n1 * dot) + (n2 * cost));
+    float Rp = ((n2 * dot) - (n1 * cost)) / ((n2 * dot) + (n1 * cost));
+    kr = (Rs * Rs + Rp * Rp) /2;
   }
-  float n = n1 / n2;
-  float k = (1-(n*n) * (1-(dot*dot)));
-  if(k < 0){
-    printf("here\n");
-    return reflect(normal, dir);
-  }
-  else{
-    return n*dir + (n * dot - sqrt(k))*normal;;
-  }
+  return kr;
 }
 
 vec3 get_color(const Intersection& i, const vector<Triangle>& triangles, vec4 dir, int depth ){
   Triangle triangle = triangles[i.triangleIndex];
+
   if (triangle.material == Diff){
     vec3 indirectLight = 0.5f*vec3( 1, 1, 1 );
     vec3 directLight = DirectLight(i, triangles);
@@ -206,9 +249,9 @@ vec3 get_color(const Intersection& i, const vector<Triangle>& triangles, vec4 di
     return triangle.color * totalLight;
   }
 
-  else if((triangle.material == Spec) && (depth < maxReflectionDepth)){
+  else if((triangle.material == Spec) && (depth < options.max_depth)){
     //reflect all light
-    vec4 new_dir = reflect(triangles[i.triangleIndex].normal, dir);
+    vec4 new_dir = reflect(triangle.normal, dir);
     Intersection closestIntersection;
     if(ClosestIntersection(i.position+(0.001f*new_dir), new_dir, triangles, closestIntersection)){
       return 0.8f * get_color(closestIntersection, triangles, new_dir, depth + 1);
@@ -216,81 +259,123 @@ vec3 get_color(const Intersection& i, const vector<Triangle>& triangles, vec4 di
     else return vec3(0,0,0);
   }
 
-  else if (triangle.material == Glass && (depth < maxReflectionDepth)){
+  else if (triangle.material == Glass && (depth < options.max_depth)){
     // refract/reflect
-    vec4 new_dir = refract(triangles[i.triangleIndex].normal, dir);
-    Intersection closestIntersection;
-    if(ClosestIntersection(i.position+(0.001f*new_dir), new_dir, triangles, closestIntersection)){
-      return 0.9f * get_color(closestIntersection, triangles, new_dir, depth + 1);
+    float n = 0.0f;
+    float k = 0.0f;
+    float kr = fresnel(triangle.normal, dir, n, k);
+    vec3 refract_color;
+    if(kr < 1){
+      vec4 refract_dir = refract(triangle.normal, dir, n, k);
+      Intersection closestIntersection;
+      if(ClosestIntersection(i.position+(0.001f*refract_dir), refract_dir, triangles, closestIntersection)){
+        refract_color = 0.9f * get_color(closestIntersection, triangles, refract_dir, depth+1);
+      }
+      else refract_color = vec3(0,0,0);
     }
-    else return vec3(0,0,0);
+    vec4 reflect_dir = reflect(triangle.normal, dir);
+    vec3 reflect_color;
+    Intersection intersection;
+    if(ClosestIntersection(i.position+(0.001f*reflect_dir), reflect_dir, triangles, intersection)){
+      reflect_color = 0.8f * get_color(intersection, triangles, reflect_dir, depth + 1);
+    }
+    else reflect_color = vec3(0,0,0);
+    return (reflect_color * kr) + (refract_color*(1-kr));
   }
   else return vec3(0,0,0);
+}
+
+vector<vec4> RandCameraPoints(){
+  vector<vec4> points;
+  if(options.num_dof_rays == 1){
+    points.push_back(camera.position);
+  }
+  else{
+    for(int i = 0; i < options.num_dof_rays; i++){
+      float x = camera.position.x - ((float)rand() / ((float)RAND_MAX / camera.aperture) - (camera.aperture/2.0f)) * cos(camera.angle);
+      float y = camera.position.y + ((float)rand() / ((float)RAND_MAX / camera.aperture) - (camera.aperture/2.0f));
+      float z = camera.position.z + ((float)rand() / ((float)RAND_MAX / camera.aperture) - (camera.aperture/2.0f)) * sin(camera.angle);
+      points.push_back(vec4(x, y, z, 1.0));
+    }
+  }
+  return points;
 }
 
 void Draw(screen* screen, const vector<Triangle>& triangles){
   /* Clear buffer */
   memset(screen->buffer, 0, screen->height*screen->width*sizeof(uint32_t));
+  vector<vec4> points = RandCameraPoints();
 
   for(int x = 0; x<SCREEN_WIDTH; x++){
     for(int y = 0; y<SCREEN_HEIGHT; y++){
-      // printf("(%d, %d)", x, y);
       vec3 color = vec3( 0, 0, 0 );
       Intersection closestIntersection;
+      for(int i = 0; i < points.size(); i++){
+        vec4 dir = y_rotation(camera.angle) * vec4(x-SCREEN_WIDTH/2, y-SCREEN_HEIGHT/2, camera.focalLength, 1);
+        vec4 ray_intersection = points[i] + (dir * camera.dof_length);
+        dir = ray_intersection - points[i];
 
-      for (float i = -camera.aperture; i < camera.aperture; i+=0.01){
-        for(float j = -camera.aperture; j < camera.aperture; j+=0.01){
-          vec4 start = camera.position;
-          vec4 dir = camera.rotation * vec4(x-SCREEN_WIDTH/2, y-SCREEN_HEIGHT/2, camera.focalLength, 1);
-          vec4 ray_intersection = start + (dir * camera.dof_length);
-          start.x += i;
-          start.y += j;
-          dir = ray_intersection - start;
-
-          if (ClosestIntersection(start, dir, triangles, closestIntersection)){
-            color += get_color(closestIntersection, triangles, dir, 0);
-          }
+        if (ClosestIntersection(points[i], dir, triangles, closestIntersection)){
+          color += get_color(closestIntersection, triangles, dir, 0);
         }
       }
-      PutPixelSDL(screen, x, y, color*0.01f);
+      float scale = 1.f/options.num_dof_rays;
+      PutPixelSDL(screen, x, y, color*scale);
     }
   }
 }
 
-float yaw = 0.0;
 void Update(){
   static int t = SDL_GetTicks();
   /* Compute frame time */
   int t2 = SDL_GetTicks();
   float dt = float(t2-t);
   t = t2;
+  float st = dt/1000;
   /*Good idea to remove this*/
-  std::cout << "Render time: " << dt << " ms." << std::endl;
+  // std::cout << "Render time: " << st << " s." << std::endl;
+
+  printf("Aperture = %f \n DoF Length = %f\n\n", camera.aperture, camera.dof_length);
 
   //camera movement
   const Uint8 *keystate = SDL_GetKeyboardState( 0 );
   if( keystate[SDL_SCANCODE_UP] ){
-    camera.position.y-=0.1;
+    camera.position.z += 0.1;
   }
   if( keystate[SDL_SCANCODE_DOWN] ){
-    camera.position.y+=0.1;
+    camera.position.z -= 0.1;
   }
   if( keystate[SDL_SCANCODE_LEFT] ){
-    yaw -= 0.02;
-    y_rotation(yaw);
-    // camera.position = camera.rotation * camera.position;
+    camera.position.x -= 0.1;
   }
   if( keystate[SDL_SCANCODE_RIGHT] ){
-    yaw += 0.02;
-    y_rotation(yaw);
-    // camera.position = camera.rotation * camera.position;
+    camera.position.x += 0.1;
+  }
+  if (keystate[SDL_SCANCODE_COMMA]){
+    camera.angle -= 0.02;
+  }
+  if( keystate[SDL_SCANCODE_PERIOD]){
+    camera.angle += 0.02;
+  }
+
+  if( keystate[SDL_SCANCODE_L] ){
+    camera.aperture -= 0.02;
+  }
+  if( keystate[SDL_SCANCODE_O] ){
+    camera.aperture += 0.02;
+  }
+  if( keystate[SDL_SCANCODE_K] ){
+    camera.dof_length -= 0.001;
+  }
+  if( keystate[SDL_SCANCODE_I] ){
+    camera.dof_length += 0.001;
   }
 
   //light movement
-  if( keystate[SDL_SCANCODE_W] ){
+  if( keystate[SDL_SCANCODE_R] ){
     light.position.y -= 0.1;
   }
-  if( keystate[SDL_SCANCODE_S] ){
+  if( keystate[SDL_SCANCODE_F] ){
     light.position.y += 0.1;
   }
   if( keystate[SDL_SCANCODE_A] ){
@@ -299,10 +384,17 @@ void Update(){
   if( keystate[SDL_SCANCODE_D] ){
     light.position.x += 0.1;
   }
+  if( keystate[SDL_SCANCODE_S] ){
+    light.position.z -= 0.1;
+  }
+  if( keystate[SDL_SCANCODE_W] ){
+    light.position.z += 0.1;
+  }
+
 }
 
-void y_rotation(float angle){
-  camera.rotation = mat4(cos(angle) , 0, sin(angle), 0,
+mat4 y_rotation(float angle){
+  return mat4(cos(angle) , 0, sin(angle), 0,
   0          , 1, 0         , 0,
   -sin(angle), 0, cos(angle), 0,
   0          , 0, 0         , 1);
