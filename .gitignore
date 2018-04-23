@@ -3,3 +3,5 @@ raytracer/Build/*
 
 .DS_Store
 .idea
+
+cmake-build-debug/
