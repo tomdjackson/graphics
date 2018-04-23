@@ -58,7 +58,6 @@ const float translationIncr = 0.5;
 
 vec4 currentNormal;
 vec3 currentReflectance;
-vec3 currentColour;
 
 screen* sdlScreen;
 
@@ -123,8 +122,6 @@ void Draw(vector<Triangle>&triangles) {
         vertices[1].position = triangles[i].v1;
         vertices[2].position = triangles[i].v2;
         currentNormal = triangles[i].normal;
-//        currentColour = triangles[i].color;
-//        currentReflectance = vec3(0.9, 0.9, 0.9);
         currentReflectance = triangles[i].color;
 
         DrawPolygon(vertices);
@@ -147,7 +144,7 @@ void Update() {
     vec4 forward(camera.R[2][0], camera.R[2][1], camera.R[2][2], 1);
 
     const Uint8 *keyPress = SDL_GetKeyboardState(0);
-    // Camera position
+    /* Camera position */
     if (keyPress[SDL_SCANCODE_UP]) {
         camera.position += translationIncr * up;
     }
@@ -166,27 +163,19 @@ void Update() {
     if (keyPress[SDL_SCANCODE_LEFT]) {
         camera.position -= translationIncr * right;
     }
-    // Rotate left
+    /* Rotate left */
     if (keyPress[SDL_SCANCODE_Q]) {
         camera.position -= translationIncr * right;
         camera.yaw -= rotationIncr;
         Rotate();
-
     }
-    // Rotate right
+    /* Rotate right */
     if (keyPress[SDL_SCANCODE_E]) {
         camera.yaw += rotationIncr;
         Rotate();
         camera.position += translationIncr * right;
     }
-    // Reset
-    if (keyPress[SDL_SCANCODE_V]) {
-        camera.position = vec4(0, 0, -3.001, 1);
-        camera.yaw = 0;
-        camera.R = identityMatrix;
-        light.pos = vec4(0, -0.5, -0.7, 1);
-    }
-    // Light position
+    /* Light position */
     if (keyPress[SDL_SCANCODE_W]) {
         light.pos.z += 0.1;
     }
@@ -205,7 +194,13 @@ void Update() {
     if (keyPress[SDL_SCANCODE_F]) {
         light.pos.y -= 0.1;
     }
-
+    /* Reset */
+    if (keyPress[SDL_SCANCODE_V]) {
+        camera.position = vec4(0, 0, -3.001, 1);
+        camera.yaw = 0;
+        camera.R = identityMatrix;
+        light.pos = vec4(0, -0.5, -0.7, 1);
+    }
 }
 
 void Rotate() {
@@ -249,7 +244,7 @@ void PixelShader(Pixel& p) {
     int x = p.x;
     int y = p.y;
 
-//    if (!((x < 0) || (y < 0) || (x > SCREEN_WIDTH) || (y > SCREEN_HEIGHT))) {
+    if (!((x < 0) || (y < 0) || (x > SCREEN_WIDTH) || (y > SCREEN_HEIGHT))) {
         if (p.zinv > depthBuffer[x][y]) {
             p.pos3d.x /= p.zinv;
             p.pos3d.y /= p.zinv;
@@ -268,7 +263,7 @@ void PixelShader(Pixel& p) {
             PutPixelSDL(sdlScreen, x, y, illumination);
             depthBuffer[x][y] = p.zinv;
         }
-//    }
+    }
 }
 
 void Interpolate(Pixel a, Pixel b, vector<Pixel>& result) {
