@@ -15,9 +15,10 @@ using glm::mat4;
 using glm::vec2;
 using glm::clamp;
 
-#define SCREEN_WIDTH 500
 #define SCREEN_HEIGHT 500
+#define SCREEN_WIDTH 500
 #define FULLSCREEN_MODE false
+#define CLIP 1
 
 /*
  * STRUCTS & CONSTS
@@ -36,7 +37,7 @@ struct Pixel {
     int y;
     float zinv;
     vec4 pos3d;
-    vec4 viewPosition;
+    vec4 cameraPosition;
 };
 
 struct Vertex {
@@ -50,7 +51,7 @@ struct Light{
 };
 Light light;
 
-float depthBuffer[SCREEN_WIDTH][SCREEN_HEIGHT];
+float depthBuffer[SCREEN_HEIGHT][SCREEN_WIDTH];
 
 mat4 identityMatrix = mat4(1.0f);
 const float rotationIncr = 0.1;
@@ -63,8 +64,8 @@ screen* sdlScreen;
 
 /* FXAA */
 
-vec3 colourBuffer[SCREEN_WIDTH][SCREEN_HEIGHT];
-const vec2 invScreen(1.0f / SCREEN_WIDTH, 1.0f / SCREEN_HEIGHT);
+vec3 colourBuffer[SCREEN_HEIGHT][SCREEN_WIDTH];
+const vec2 invScreen(1.0f / SCREEN_HEIGHT, 1.0f / SCREEN_WIDTH);
 const float edgeMin = 1.f / 8.f;
 const float edgeMax = 1.f / 128.f;
 const float gradScale = 2.5f;
@@ -107,18 +108,18 @@ vec3 GetFromBuffer(float x, float y);
 
 vec3 FXAA(int x, int y);
 
-vector<Pixel> ClipPolygon(const vector<Pixel>& vertexPixels);
+void ClipPolygon(vector<Pixel>& vertexPixels);
 
-vector<Pixel> ClipNearest(const vector<Pixel>& vertexPixels);
+void ClipNearest(vector<Pixel>& vertexPixels);
 
-vector<Pixel> ClipEdge(const vector<Pixel>& vertexPixels, vec2 edgeVertex[]);
+void ClipEdge(vector<Pixel>& vertexPixels, vec2 edgeVertex[]);
 
 bool OnEdgeVertex(Pixel pixel, vec2 edgeVertex[]);
 
-Pixel Intersection(Pixel pixel1, Pixel pixel2, vec2 edgeVertex[]);
+void Intersection(Pixel pixel1, Pixel pixel2, vec2 edgeVertex[], Pixel& intersection);
 
 int main(int argc, char *argv[]) {
-    sdlScreen = InitializeSDL(SCREEN_WIDTH, SCREEN_HEIGHT, FULLSCREEN_MODE);
+    sdlScreen = InitializeSDL(SCREEN_HEIGHT, SCREEN_WIDTH, FULLSCREEN_MODE);
 
     InitialiseStructs();
 
@@ -152,17 +153,14 @@ void Draw(vector<Triangle>&triangles) {
         currentReflectance = triangles[i].color;
 
         /* Backface culling */
-        vec4 viewVector = vertices[0].position - camera.position * camera.R;
-        float dot = glm::dot(currentNormal, viewVector);
+        vec4 viewVector = vertices[0].position * camera.R - camera.position;
+        bool backface = glm::dot(currentNormal, viewVector) < 0;
 
-        if (dot < 0) DrawPolygon(vertices);
-
-//        DrawPolygon(vertices);
+        if (backface) DrawPolygon(vertices);
     }
 
-    for (int i = 0; i < SCREEN_WIDTH; i++) {
-        for (int j = 0; j < SCREEN_HEIGHT; j++) {
-//            PutPixelSDL(sdlScreen, i, j, colourBuffer[i][j]);
+    for (int i = 0; i < SCREEN_HEIGHT; i++) {
+        for (int j = 0; j < SCREEN_WIDTH; j++) {
             PutPixelSDL(sdlScreen, i, j, FXAA(i, j));
         }
     }
@@ -204,7 +202,6 @@ void Update() {
     }
     /* Rotate left */
     if (keyState[SDL_SCANCODE_Q]) {
-//        camera.position -= translationIncr * right;
         camera.yaw -= rotationIncr;
         Rotate();
     }
@@ -212,7 +209,6 @@ void Update() {
     if (keyState[SDL_SCANCODE_E]) {
         camera.yaw += rotationIncr;
         Rotate();
-//        camera.position += translationIncr * right;
     }
     /* Light position */
     if (keyState[SDL_SCANCODE_W]) {
@@ -263,25 +259,26 @@ void InitialiseStructs() {
 }
 
 void InitialiseDepthBuffer() {
-    for(int i=0; i < SCREEN_WIDTH; i++)
-        for(int j=0; j < SCREEN_HEIGHT; j++)
+    for(int i = 0; i < SCREEN_HEIGHT; i++)
+        for(int j = 0; j < SCREEN_WIDTH; j++) {
             depthBuffer[i][j] = -numeric_limits<int>::max();
+        }
 }
 
 void InitialiseColourBuffer() {
-    for(int i=0; i < SCREEN_WIDTH; i++)
-        for(int j=0; j < SCREEN_HEIGHT; j++) {
+    for(int i = 0; i < SCREEN_HEIGHT; i++)
+        for(int j = 0; j < SCREEN_WIDTH; j++) {
             colourBuffer[i][j] = vec3(0.f, 0.f, 0.f);
         }
 }
 
 void VertexShader(const Vertex& v, Pixel& pix) {
-    pix.viewPosition = (v.position - camera.position) * camera.R;
+    pix.cameraPosition = (v.position - camera.position) * camera.R;
 
-    pix.x = (int) (camera.focalLength * (pix.viewPosition.x / pix.viewPosition.z)) + (SCREEN_WIDTH / 2);
-    pix.y = (int) (camera.focalLength * (pix.viewPosition.y / pix.viewPosition.z)) + (SCREEN_HEIGHT / 2);
+    pix.x = (int) (camera.focalLength * (pix.cameraPosition.x / pix.cameraPosition.z)) + (SCREEN_WIDTH / 2);
+    pix.y = (int) (camera.focalLength * (pix.cameraPosition.y / pix.cameraPosition.z)) + (SCREEN_HEIGHT / 2);
 
-    pix.zinv = 1.f/pix.viewPosition.z;
+    pix.zinv = 1.f / pix.cameraPosition.z;
     pix.pos3d = v.position;
 }
 
@@ -289,7 +286,7 @@ void PixelShader(Pixel& p) {
     int x = p.x;
     int y = p.y;
 
-    if ((x >= 0) && (y >= 0) && (x < SCREEN_WIDTH) && (y < SCREEN_HEIGHT)) {
+    if ((x >= 0) && (y >= 0) && (x < SCREEN_HEIGHT) && (y < SCREEN_WIDTH)) {
         if (p.zinv > depthBuffer[x][y]) {
 
             vec4 r = glm::normalize(light.pos - p.pos3d);
@@ -402,7 +399,7 @@ void DrawPolygonRows(const vector<Pixel>& leftPixels, const vector<Pixel> rightP
     int numPix = leftPixels.size();
 
     for (int i = 0; i < numPix; i++) {
-        if (leftPixels[i].y >= 0 && leftPixels[i].y < SCREEN_HEIGHT) DrawLineSDL(leftPixels[i], rightPixels[i]);
+        if (leftPixels[i].y >= 0 && leftPixels[i].y < SCREEN_WIDTH) DrawLineSDL(leftPixels[i], rightPixels[i]);
     }
 }
 
@@ -413,7 +410,7 @@ void DrawPolygon(const vector<Vertex>& vertices) {
     for(int i=0; i<V; ++i) VertexShader(vertices[i], vertexPixels[i]);
 
     /* Polygon Clipping */
-    vertexPixels = ClipPolygon(vertexPixels);
+    if (CLIP == 1) ClipPolygon(vertexPixels);
 
     vector<Pixel> leftPixels;
     vector<Pixel> rightPixels;
@@ -427,8 +424,8 @@ vec3 GetFromBuffer(vec2 point) {
 }
 
 vec3 GetFromBuffer(float x, float y) {
-    int width_ = SCREEN_WIDTH - 1;
-    int height_ = SCREEN_HEIGHT - 1;
+    int width_ = SCREEN_HEIGHT - 1;
+    int height_ = SCREEN_WIDTH - 1;
 
     int x_ = clamp((int) (clamp(x, 0.f, 1.f) * width_), 0, width_);
     int y_ = clamp((int) (clamp(y, 0.f, 1.f) * height_), 0, height_);
@@ -437,7 +434,7 @@ vec3 GetFromBuffer(float x, float y) {
 }
 
 vec3 FXAA(int x, int y) {
-    vec2 point(((float) x / (float) SCREEN_WIDTH), ((float) y / (float) SCREEN_HEIGHT));
+    vec2 point(((float) x / (float) SCREEN_HEIGHT), ((float) y / (float) SCREEN_WIDTH));
 
     vec3 centre = GetFromBuffer(point);
     vec3 NW = GetFromBuffer(point.x - invScreen.x, point.y - invScreen.y);
@@ -464,7 +461,10 @@ vec3 FXAA(int x, int y) {
     float gradThreshold = glm::max(temp, edgeMin);
     float gradMin = 1.f / (glm::min(abs(grad.x), abs(grad.y)) + gradThreshold);
 
-    grad = vec2(glm::min(gradScale, glm::max(-gradScale, grad.x * gradMin)) * invScreen.x, glm::min(gradScale, glm::max(-gradScale, grad.y * gradMin)) * invScreen.y);
+    float gradX = glm::min(gradScale, glm::max(-gradScale, grad.x * gradMin)) * invScreen.x;
+    float gradY = glm::min(gradScale, glm::max(-gradScale, grad.y * gradMin)) * invScreen.y;
+
+    grad = vec2(gradX, gradY);
 
     vec3 A = 0.5f * (GetFromBuffer(point + (-fxaaConst * grad)) + GetFromBuffer(point + (fxaaConst * grad)));
     vec3 B = 0.5f * A + 0.25f * (GetFromBuffer(point + (-0.5f * grad)) + GetFromBuffer(point + (0.5f * grad)));
@@ -478,38 +478,32 @@ vec3 FXAA(int x, int y) {
     }
 }
 
-vector<Pixel> ClipPolygon(const vector<Pixel>& vertexPixels) {
-    vector<Pixel> results;
+void ClipPolygon(vector<Pixel>& vertexPixels) {
     vec2 edgeVertices[2];
 
-    results = ClipNearest(vertexPixels);
+    ClipNearest(vertexPixels);
 
     /* Top edge */
-    edgeVertices[0] = vec2(SCREEN_WIDTH, 0);
+    edgeVertices[0] = vec2(SCREEN_HEIGHT, 0);
     edgeVertices[1] = vec2(0, 0);
-    results = ClipEdge(results, edgeVertices);
+    ClipEdge(vertexPixels, edgeVertices);
     /* Left edge */
     edgeVertices[0] = vec2(0, 0);
-    edgeVertices[1] = vec2(0, SCREEN_HEIGHT);
-    results = ClipEdge(results, edgeVertices);
+    edgeVertices[1] = vec2(0, SCREEN_WIDTH);
+    ClipEdge(vertexPixels, edgeVertices);
     /* Right edge */
-    edgeVertices[0] = vec2(SCREEN_WIDTH, SCREEN_HEIGHT);
-    edgeVertices[1] = vec2(SCREEN_HEIGHT, 0);
-    results = ClipEdge(results, edgeVertices);
+    edgeVertices[0] = vec2(SCREEN_HEIGHT, SCREEN_WIDTH);
+    edgeVertices[1] = vec2(SCREEN_WIDTH, 0);
+    ClipEdge(vertexPixels, edgeVertices);
     /* Bottom edge */
-    edgeVertices[0] = vec2(0, SCREEN_HEIGHT);
-    edgeVertices[1] = vec2(SCREEN_WIDTH, SCREEN_HEIGHT);
-    results = ClipEdge(results, edgeVertices);
+    edgeVertices[0] = vec2(0, SCREEN_WIDTH);
+    edgeVertices[1] = vec2(SCREEN_HEIGHT, SCREEN_WIDTH);
+    ClipEdge(vertexPixels, edgeVertices);
 
-    return results;
 }
 
-vector<Pixel> ClipNearest(const vector<Pixel>& vertexPixels) {
+void ClipNearest(vector<Pixel>& vertexPixels) {
     int vSize = vertexPixels.size();
-    /* Check polygon supplied */
-    if (vSize < 3) {
-        return vertexPixels;
-    }
 
     vector<Pixel> clipped;
     Pixel pixel1 = vertexPixels[vSize - 1];
@@ -518,26 +512,26 @@ vector<Pixel> ClipNearest(const vector<Pixel>& vertexPixels) {
     for (int i = 0; i < vSize; i++) {
         pixel2 = vertexPixels[i];
 
-        if ((pixel1.viewPosition.z >= 0.0001) && (pixel2.viewPosition.z >= 0.0001)) {
+        if ((pixel1.cameraPosition.z >= 0.0001) && (pixel2.cameraPosition.z >= 0.0001)) {
             clipped.push_back(pixel2);
-        } else if ((pixel1.viewPosition.z >= 0.0001) && !(pixel2.viewPosition.z >= 0.0001)) {
-            float diff = (pixel1.viewPosition.z - 0.0001) / (pixel1.viewPosition.z - pixel2.viewPosition.z);
+        } else if ((pixel1.cameraPosition.z >= 0.0001) && !(pixel2.cameraPosition.z >= 0.0001)) {
+            float diff = (pixel1.cameraPosition.z - 0.0001) / (pixel1.cameraPosition.z - pixel2.cameraPosition.z);
             Pixel intersection;
-            intersection.viewPosition = ((1 - diff) * pixel1.viewPosition) + (diff * pixel2.viewPosition);
+            intersection.cameraPosition = ((1 - diff) * pixel1.cameraPosition) + (diff * pixel2.cameraPosition);
             intersection.pos3d = ((1 - diff) * pixel1.pos3d) + (diff * pixel2.pos3d);
-            intersection.x = (int) (camera.focalLength * (intersection.viewPosition.x / intersection.viewPosition.z)) + (SCREEN_WIDTH / 2);
-            intersection.y = (int) (camera.focalLength * (intersection.viewPosition.y / intersection.viewPosition.z)) + (SCREEN_HEIGHT / 2);
-            intersection.zinv = 1.f / intersection.viewPosition.z;
+            intersection.x = (int) (camera.focalLength * (intersection.cameraPosition.x / intersection.cameraPosition.z)) + (SCREEN_HEIGHT / 2);
+            intersection.y = (int) (camera.focalLength * (intersection.cameraPosition.y / intersection.cameraPosition.z)) + (SCREEN_WIDTH / 2);
+            intersection.zinv = 1.f / intersection.cameraPosition.z;
 
             clipped.push_back(intersection);
-        } else if (!(pixel1.viewPosition.z >= 0.0001) && (pixel2.viewPosition.z >= 0.0001)) {
-            float diff = (pixel1.viewPosition.z - 0.0001) / (pixel1.viewPosition.z - pixel2.viewPosition.z);
+        } else if (!(pixel1.cameraPosition.z >= 0.0001) && (pixel2.cameraPosition.z >= 0.0001)) {
+            float diff = (pixel1.cameraPosition.z - 0.0001) / (pixel1.cameraPosition.z - pixel2.cameraPosition.z);
             Pixel intersection;
-            intersection.viewPosition = ((1 - diff) * pixel1.viewPosition) + (diff * pixel2.viewPosition);
+            intersection.cameraPosition = ((1 - diff) * pixel1.cameraPosition) + (diff * pixel2.cameraPosition);
             intersection.pos3d = ((1 - diff) * pixel1.pos3d) + (diff * pixel2.pos3d);
-            intersection.x = (int) (camera.focalLength * (intersection.viewPosition.x / intersection.viewPosition.z)) + (SCREEN_WIDTH / 2);
-            intersection.y = (int) (camera.focalLength * (intersection.viewPosition.y / intersection.viewPosition.z)) + (SCREEN_HEIGHT / 2);
-            intersection.zinv = 1.f / intersection.viewPosition.z;
+            intersection.x = (int) (camera.focalLength * (intersection.cameraPosition.x / intersection.cameraPosition.z)) + (SCREEN_HEIGHT / 2);
+            intersection.y = (int) (camera.focalLength * (intersection.cameraPosition.y / intersection.cameraPosition.z)) + (SCREEN_WIDTH / 2);
+            intersection.zinv = 1.f / intersection.cameraPosition.z;
 
             clipped.push_back(intersection);
             clipped.push_back(pixel2);
@@ -546,15 +540,11 @@ vector<Pixel> ClipNearest(const vector<Pixel>& vertexPixels) {
         pixel1 = pixel2;
     }
 
-    return clipped;
+    vertexPixels = clipped;
 }
 
-vector<Pixel> ClipEdge(const vector<Pixel>& vertexPixels, vec2 edgeVertex[]) {
+void ClipEdge(vector<Pixel>& vertexPixels, vec2 edgeVertex[]) {
     int vSize = vertexPixels.size();
-    /* Check polygon supplied */
-    if (vSize < 3) {
-        return vertexPixels;
-    }
 
     vector<Pixel> clipped;
     Pixel pixel1 = vertexPixels[vSize - 1];
@@ -566,11 +556,13 @@ vector<Pixel> ClipEdge(const vector<Pixel>& vertexPixels, vec2 edgeVertex[]) {
         if ((OnEdgeVertex(pixel1, edgeVertex)) && (OnEdgeVertex(pixel2, edgeVertex))) {
             clipped.push_back(pixel2);
         } else if (((OnEdgeVertex(pixel1, edgeVertex)) && !(OnEdgeVertex(pixel2, edgeVertex)))) {
-            Pixel intersection = Intersection(pixel1, pixel2, edgeVertex);
+            Pixel intersection;
+            Intersection(pixel1, pixel2, edgeVertex, intersection);
 
             clipped.push_back(intersection);
         } else if (!(OnEdgeVertex(pixel1, edgeVertex)) && (OnEdgeVertex(pixel2, edgeVertex))) {
-            Pixel intersection = Intersection(pixel1, pixel2, edgeVertex);
+            Pixel intersection;
+            Intersection(pixel1, pixel2, edgeVertex, intersection);
 
             clipped.push_back(intersection);
             clipped.push_back(pixel2);
@@ -579,7 +571,7 @@ vector<Pixel> ClipEdge(const vector<Pixel>& vertexPixels, vec2 edgeVertex[]) {
         pixel1 = pixel2;
     }
 
-    return clipped;
+    vertexPixels = clipped;
 }
 
 bool OnEdgeVertex(Pixel pixel, vec2 edgeVertex[]) {
@@ -603,41 +595,37 @@ bool OnEdgeVertex(Pixel pixel, vec2 edgeVertex[]) {
     }
 }
 
-Pixel Intersection(Pixel pixel1, Pixel pixel2, vec2 edgeVertex[]) {
-    Pixel intersection;
-
+void Intersection(Pixel pixel1, Pixel pixel2, vec2 edgeVertex[], Pixel& intersection) {
     /* Top edge */
     if (edgeVertex[1].x < edgeVertex[0].x) {
-        float diff = (2 * pixel1.viewPosition.y + pixel1.viewPosition.z) /
-                     ((2 * pixel1.viewPosition.y + pixel1.viewPosition.z) - (2 * pixel2.viewPosition.y + pixel2.viewPosition.z));
-        intersection.viewPosition = ((1 - diff) * pixel1.viewPosition) + (diff * pixel2.viewPosition);
+        float diff = (2 * pixel1.cameraPosition.y + pixel1.cameraPosition.z) /
+                     ((2 * pixel1.cameraPosition.y + pixel1.cameraPosition.z) - (2 * pixel2.cameraPosition.y + pixel2.cameraPosition.z));
+        intersection.cameraPosition = ((1 - diff) * pixel1.cameraPosition) + (diff * pixel2.cameraPosition);
         intersection.pos3d = ((1 - diff) * pixel1.pos3d) + (diff * pixel2.pos3d);
     }
     /* Bottom edge*/
     else if (edgeVertex[1].x > edgeVertex[0].x) {
-        float diff = (2 * pixel1.viewPosition.y - pixel1.viewPosition.z) /
-                ((2 * pixel1.viewPosition.y - pixel1.viewPosition.z) - (2 * pixel2.viewPosition.y - pixel2.viewPosition.z));
-        intersection.viewPosition = ((1 - diff) * pixel1.viewPosition) + (diff * pixel2.viewPosition);
+        float diff = (2 * pixel1.cameraPosition.y - pixel1.cameraPosition.z) /
+                ((2 * pixel1.cameraPosition.y - pixel1.cameraPosition.z) - (2 * pixel2.cameraPosition.y - pixel2.cameraPosition.z));
+        intersection.cameraPosition = ((1 - diff) * pixel1.cameraPosition) + (diff * pixel2.cameraPosition);
         intersection.pos3d = ((1 - diff) * pixel1.pos3d) + (diff * pixel2.pos3d);
     }
     /* Left edge */
     else if (edgeVertex[1].y > edgeVertex[0].y) {
-        float diff = (2 * pixel1.viewPosition.x + pixel1.viewPosition.z) /
-                     ((2 * pixel1.viewPosition.x + pixel1.viewPosition.z) - (2 * pixel2.viewPosition.x + pixel2.viewPosition.z));
-        intersection.viewPosition = ((1 - diff) * pixel1.viewPosition) + (diff * pixel2.viewPosition);
+        float diff = (2 * pixel1.cameraPosition.x + pixel1.cameraPosition.z) /
+                     ((2 * pixel1.cameraPosition.x + pixel1.cameraPosition.z) - (2 * pixel2.cameraPosition.x + pixel2.cameraPosition.z));
+        intersection.cameraPosition = ((1 - diff) * pixel1.cameraPosition) + (diff * pixel2.cameraPosition);
         intersection.pos3d = ((1 - diff) * pixel1.pos3d) + (diff * pixel2.pos3d);
     }
     /* Right edge*/
     else if (edgeVertex[1].y < edgeVertex[0].y) {
-        float diff = (2 * pixel1.viewPosition.x - pixel1.viewPosition.z) /
-                     ((2 * pixel1.viewPosition.x - pixel1.viewPosition.z) - (2 * pixel2.viewPosition.x - pixel2.viewPosition.z));
-        intersection.viewPosition = ((1 - diff) * pixel1.viewPosition) + (diff * pixel2.viewPosition);
+        float diff = (2 * pixel1.cameraPosition.x - pixel1.cameraPosition.z) /
+                     ((2 * pixel1.cameraPosition.x - pixel1.cameraPosition.z) - (2 * pixel2.cameraPosition.x - pixel2.cameraPosition.z));
+        intersection.cameraPosition = ((1 - diff) * pixel1.cameraPosition) + (diff * pixel2.cameraPosition);
         intersection.pos3d = ((1 - diff) * pixel1.pos3d) + (diff * pixel2.pos3d);
     }
 
-    intersection.x = (int) (camera.focalLength * (intersection.viewPosition.x / intersection.viewPosition.z)) + (SCREEN_WIDTH / 2);
-    intersection.y = (int) (camera.focalLength * (intersection.viewPosition.y / intersection.viewPosition.z)) + (SCREEN_HEIGHT / 2);
-    intersection.zinv = 1.f / intersection.viewPosition.z;
-
-    return intersection;
+    intersection.x = (int) (camera.focalLength * (intersection.cameraPosition.x / intersection.cameraPosition.z)) + (SCREEN_HEIGHT / 2);
+    intersection.y = (int) (camera.focalLength * (intersection.cameraPosition.y / intersection.cameraPosition.z)) + (SCREEN_WIDTH / 2);
+    intersection.zinv = 1.f / intersection.cameraPosition.z;
 }
