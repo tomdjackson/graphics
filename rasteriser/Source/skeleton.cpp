@@ -15,8 +15,8 @@ using glm::mat4;
 using glm::vec2;
 using glm::clamp;
 
-#define SCREEN_WIDTH 320
-#define SCREEN_HEIGHT 320
+#define SCREEN_WIDTH 500
+#define SCREEN_HEIGHT 500
 #define FULLSCREEN_MODE false
 
 /*
@@ -36,6 +36,7 @@ struct Pixel {
     int y;
     float zinv;
     vec4 pos3d;
+    vec4 viewPosition;
 };
 
 struct Vertex {
@@ -45,7 +46,7 @@ struct Vertex {
 struct Light{
     vec4 pos;
     vec3 power;
-    vec3 ingradectLightPowerPerArea;
+    vec3 indirectLightPowerPerArea;
 };
 Light light;
 
@@ -60,7 +61,7 @@ vec3 currentReflectance;
 
 screen* sdlScreen;
 
-/* fxaa */
+/* FXAA */
 
 vec3 colourBuffer[SCREEN_WIDTH][SCREEN_HEIGHT];
 const vec2 invScreen(1.0f / SCREEN_WIDTH, 1.0f / SCREEN_HEIGHT);
@@ -100,11 +101,21 @@ void DrawPolygonRows(const vector<Pixel>& leftPixels, const vector<Pixel> rightP
 
 void DrawPolygon(const vector<Vertex>& vertices);
 
-vec3 getFromBuffer(vec2 point);
+vec3 GetFromBuffer(vec2 point);
 
-vec3 getFromBuffer(float x, float y);
+vec3 GetFromBuffer(float x, float y);
 
-vec3 fxaa(int x, int y);
+vec3 FXAA(int x, int y);
+
+vector<Pixel> ClipPolygon(const vector<Pixel>& vertexPixels);
+
+vector<Pixel> ClipNearest(const vector<Pixel>& vertexPixels);
+
+vector<Pixel> ClipEdge(const vector<Pixel>& vertexPixels, vec2 edgeVertex[]);
+
+bool OnEdgeVertex(Pixel pixel, vec2 edgeVertex[]);
+
+Pixel Intersection(Pixel pixel1, Pixel pixel2, vec2 edgeVertex[]);
 
 int main(int argc, char *argv[]) {
     sdlScreen = InitializeSDL(SCREEN_WIDTH, SCREEN_HEIGHT, FULLSCREEN_MODE);
@@ -140,13 +151,19 @@ void Draw(vector<Triangle>&triangles) {
         currentNormal = triangles[i].normal;
         currentReflectance = triangles[i].color;
 
-        DrawPolygon(vertices);
+        /* Backface culling */
+        vec4 viewVector = vertices[0].position - camera.position * camera.R;
+        float dot = glm::dot(currentNormal, viewVector);
+
+        if (dot < 0) DrawPolygon(vertices);
+
+//        DrawPolygon(vertices);
     }
 
     for (int i = 0; i < SCREEN_WIDTH; i++) {
         for (int j = 0; j < SCREEN_HEIGHT; j++) {
 //            PutPixelSDL(sdlScreen, i, j, colourBuffer[i][j]);
-            PutPixelSDL(sdlScreen, i, j, fxaa(i, j));
+            PutPixelSDL(sdlScreen, i, j, FXAA(i, j));
         }
     }
 }
@@ -155,10 +172,10 @@ void Update() {
     static int t = SDL_GetTicks();
     /* Compute frame time */
     int t2 = SDL_GetTicks();
-//    float dt = float(t2 - t);
+    float dt = float(t2 - t);
     t = t2;
 
-//    std::cout << "Render time: " << dt << " ms." << std::endl;
+    std::cout << "Render time: " << dt << " ms." << std::endl;
 
     /* Update view */
     vec4 right(camera.R[0][0], camera.R[0][1], camera.R[0][2], 1);
@@ -187,7 +204,7 @@ void Update() {
     }
     /* Rotate left */
     if (keyState[SDL_SCANCODE_Q]) {
-        camera.position -= translationIncr * right;
+//        camera.position -= translationIncr * right;
         camera.yaw -= rotationIncr;
         Rotate();
     }
@@ -195,7 +212,7 @@ void Update() {
     if (keyState[SDL_SCANCODE_E]) {
         camera.yaw += rotationIncr;
         Rotate();
-        camera.position += translationIncr * right;
+//        camera.position += translationIncr * right;
     }
     /* Light position */
     if (keyState[SDL_SCANCODE_W]) {
@@ -241,8 +258,8 @@ void InitialiseStructs() {
 
     /* Lights */
     light.pos = vec4(0, -0.5, -0.7, 1);
-    light.power = 34.f * vec3(1, 1, 1);
-    light.ingradectLightPowerPerArea = 0.5f * vec3(1, 1, 1);
+    light.power = 14.f * vec3(1, 1, 1);
+    light.indirectLightPowerPerArea = 0.5f * vec3(1, 1, 1);
 }
 
 void InitialiseDepthBuffer() {
@@ -259,13 +276,12 @@ void InitialiseColourBuffer() {
 }
 
 void VertexShader(const Vertex& v, Pixel& pix) {
-    Vertex point;
-    point.position = (v.position - camera.position) * camera.R;
+    pix.viewPosition = (v.position - camera.position) * camera.R;
 
-    pix.x = (int) (camera.focalLength * (point.position.x / point.position.z)) + (SCREEN_WIDTH / 2);
-    pix.y = (int) (camera.focalLength * (point.position.y / point.position.z)) + (SCREEN_HEIGHT / 2);
+    pix.x = (int) (camera.focalLength * (pix.viewPosition.x / pix.viewPosition.z)) + (SCREEN_WIDTH / 2);
+    pix.y = (int) (camera.focalLength * (pix.viewPosition.y / pix.viewPosition.z)) + (SCREEN_HEIGHT / 2);
 
-    pix.zinv = 1.f/point.position.z;
+    pix.zinv = 1.f/pix.viewPosition.z;
     pix.pos3d = v.position;
 }
 
@@ -273,11 +289,8 @@ void PixelShader(Pixel& p) {
     int x = p.x;
     int y = p.y;
 
-    if (!((x < 0) || (y < 0) || (x > SCREEN_WIDTH) || (y > SCREEN_HEIGHT))) {
+    if ((x >= 0) && (y >= 0) && (x < SCREEN_WIDTH) && (y < SCREEN_HEIGHT)) {
         if (p.zinv > depthBuffer[x][y]) {
-            p.pos3d.x /= p.zinv;
-            p.pos3d.y /= p.zinv;
-            p.pos3d.z /= p.zinv;
 
             vec4 r = glm::normalize(light.pos - p.pos3d);
             float dist = glm::length(light.pos - p.pos3d);
@@ -286,8 +299,8 @@ void PixelShader(Pixel& p) {
             float max_ = glm::max(dot, 0.f);
             float div = max_ / area;
 
-            vec3 gradectLight = light.power * div;
-            vec3 illumination = (gradectLight + light.ingradectLightPowerPerArea) * currentReflectance;
+            vec3 directLight = light.power * div;
+            vec3 illumination = (directLight + light.indirectLightPowerPerArea) * currentReflectance;
 
             colourBuffer[x][y] = illumination;
             depthBuffer[x][y] = p.zinv;
@@ -319,6 +332,11 @@ void Interpolate(Pixel a, Pixel b, vector<Pixel>& result) {
         current += step;
         currentPos += posStep;
     }
+
+    result[N-1].x = b.x;
+    result[N-1].y = b.y;
+    result[N-1].zinv = b.zinv;
+    result[N-1].pos3d = b.pos3d;
 }
 
 void DrawLineSDL(Pixel a, Pixel b) {
@@ -394,6 +412,9 @@ void DrawPolygon(const vector<Vertex>& vertices) {
 
     for(int i=0; i<V; ++i) VertexShader(vertices[i], vertexPixels[i]);
 
+    /* Polygon Clipping */
+    vertexPixels = ClipPolygon(vertexPixels);
+
     vector<Pixel> leftPixels;
     vector<Pixel> rightPixels;
 
@@ -401,11 +422,11 @@ void DrawPolygon(const vector<Vertex>& vertices) {
     DrawPolygonRows(leftPixels, rightPixels);
 }
 
-vec3 getFromBuffer(vec2 point) {
-    return getFromBuffer(point.x, point.y);
+vec3 GetFromBuffer(vec2 point) {
+    return GetFromBuffer(point.x, point.y);
 }
 
-vec3 getFromBuffer(float x, float y) {
+vec3 GetFromBuffer(float x, float y) {
     int width_ = SCREEN_WIDTH - 1;
     int height_ = SCREEN_HEIGHT - 1;
 
@@ -415,14 +436,14 @@ vec3 getFromBuffer(float x, float y) {
     return colourBuffer[x_][y_];
 }
 
-vec3 fxaa(int x, int y) {
+vec3 FXAA(int x, int y) {
     vec2 point(((float) x / (float) SCREEN_WIDTH), ((float) y / (float) SCREEN_HEIGHT));
 
-    vec3 centre = getFromBuffer(point);
-    vec3 NW = getFromBuffer(point.x - invScreen.x, point.y - invScreen.y);
-    vec3 NE = getFromBuffer(point.x + invScreen.x, point.y - invScreen.y);
-    vec3 SW = getFromBuffer(point.x - invScreen.x, point.y + invScreen.y);
-    vec3 SE = getFromBuffer(point.x + invScreen.x, point.y + invScreen.y);
+    vec3 centre = GetFromBuffer(point);
+    vec3 NW = GetFromBuffer(point.x - invScreen.x, point.y - invScreen.y);
+    vec3 NE = GetFromBuffer(point.x + invScreen.x, point.y - invScreen.y);
+    vec3 SW = GetFromBuffer(point.x - invScreen.x, point.y + invScreen.y);
+    vec3 SE = GetFromBuffer(point.x + invScreen.x, point.y + invScreen.y);
 
     float lumaCentre = glm::dot(centre, luma);
     float lumaNW = glm::dot(NW, luma);
@@ -445,8 +466,8 @@ vec3 fxaa(int x, int y) {
 
     grad = vec2(glm::min(gradScale, glm::max(-gradScale, grad.x * gradMin)) * invScreen.x, glm::min(gradScale, glm::max(-gradScale, grad.y * gradMin)) * invScreen.y);
 
-    vec3 A = 0.5f * (getFromBuffer(point + (-fxaaConst * grad)) + getFromBuffer(point + (fxaaConst * grad)));
-    vec3 B = 0.5f * A + 0.25f * (getFromBuffer(point + (-0.5f * grad)) + getFromBuffer(point + (0.5f * grad)));
+    vec3 A = 0.5f * (GetFromBuffer(point + (-fxaaConst * grad)) + GetFromBuffer(point + (fxaaConst * grad)));
+    vec3 B = 0.5f * A + 0.25f * (GetFromBuffer(point + (-0.5f * grad)) + GetFromBuffer(point + (0.5f * grad)));
 
     float lumaB = glm::dot(B, luma);
 
@@ -455,4 +476,168 @@ vec3 fxaa(int x, int y) {
     } else {
         return B;
     }
+}
+
+vector<Pixel> ClipPolygon(const vector<Pixel>& vertexPixels) {
+    vector<Pixel> results;
+    vec2 edgeVertices[2];
+
+    results = ClipNearest(vertexPixels);
+
+    /* Top edge */
+    edgeVertices[0] = vec2(SCREEN_WIDTH, 0);
+    edgeVertices[1] = vec2(0, 0);
+    results = ClipEdge(results, edgeVertices);
+    /* Left edge */
+    edgeVertices[0] = vec2(0, 0);
+    edgeVertices[1] = vec2(0, SCREEN_HEIGHT);
+    results = ClipEdge(results, edgeVertices);
+    /* Right edge */
+    edgeVertices[0] = vec2(SCREEN_WIDTH, SCREEN_HEIGHT);
+    edgeVertices[1] = vec2(SCREEN_HEIGHT, 0);
+    results = ClipEdge(results, edgeVertices);
+    /* Bottom edge */
+    edgeVertices[0] = vec2(0, SCREEN_HEIGHT);
+    edgeVertices[1] = vec2(SCREEN_WIDTH, SCREEN_HEIGHT);
+    results = ClipEdge(results, edgeVertices);
+
+    return results;
+}
+
+vector<Pixel> ClipNearest(const vector<Pixel>& vertexPixels) {
+    int vSize = vertexPixels.size();
+    /* Check polygon supplied */
+    if (vSize < 3) {
+        return vertexPixels;
+    }
+
+    vector<Pixel> clipped;
+    Pixel pixel1 = vertexPixels[vSize - 1];
+    Pixel pixel2;
+
+    for (int i = 0; i < vSize; i++) {
+        pixel2 = vertexPixels[i];
+
+        if ((pixel1.viewPosition.z >= 0.0001) && (pixel2.viewPosition.z >= 0.0001)) {
+            clipped.push_back(pixel2);
+        } else if ((pixel1.viewPosition.z >= 0.0001) && !(pixel2.viewPosition.z >= 0.0001)) {
+            float diff = (pixel1.viewPosition.z - 0.0001) / (pixel1.viewPosition.z - pixel2.viewPosition.z);
+            Pixel intersection;
+            intersection.viewPosition = ((1 - diff) * pixel1.viewPosition) + (diff * pixel2.viewPosition);
+            intersection.pos3d = ((1 - diff) * pixel1.pos3d) + (diff * pixel2.pos3d);
+            intersection.x = (int) (camera.focalLength * (intersection.viewPosition.x / intersection.viewPosition.z)) + (SCREEN_WIDTH / 2);
+            intersection.y = (int) (camera.focalLength * (intersection.viewPosition.y / intersection.viewPosition.z)) + (SCREEN_HEIGHT / 2);
+            intersection.zinv = 1.f / intersection.viewPosition.z;
+
+            clipped.push_back(intersection);
+        } else if (!(pixel1.viewPosition.z >= 0.0001) && (pixel2.viewPosition.z >= 0.0001)) {
+            float diff = (pixel1.viewPosition.z - 0.0001) / (pixel1.viewPosition.z - pixel2.viewPosition.z);
+            Pixel intersection;
+            intersection.viewPosition = ((1 - diff) * pixel1.viewPosition) + (diff * pixel2.viewPosition);
+            intersection.pos3d = ((1 - diff) * pixel1.pos3d) + (diff * pixel2.pos3d);
+            intersection.x = (int) (camera.focalLength * (intersection.viewPosition.x / intersection.viewPosition.z)) + (SCREEN_WIDTH / 2);
+            intersection.y = (int) (camera.focalLength * (intersection.viewPosition.y / intersection.viewPosition.z)) + (SCREEN_HEIGHT / 2);
+            intersection.zinv = 1.f / intersection.viewPosition.z;
+
+            clipped.push_back(intersection);
+            clipped.push_back(pixel2);
+        }
+
+        pixel1 = pixel2;
+    }
+
+    return clipped;
+}
+
+vector<Pixel> ClipEdge(const vector<Pixel>& vertexPixels, vec2 edgeVertex[]) {
+    int vSize = vertexPixels.size();
+    /* Check polygon supplied */
+    if (vSize < 3) {
+        return vertexPixels;
+    }
+
+    vector<Pixel> clipped;
+    Pixel pixel1 = vertexPixels[vSize - 1];
+    Pixel pixel2;
+
+    for (int i = 0; i < vSize; i++) {
+        pixel2 = vertexPixels[i];
+
+        if ((OnEdgeVertex(pixel1, edgeVertex)) && (OnEdgeVertex(pixel2, edgeVertex))) {
+            clipped.push_back(pixel2);
+        } else if (((OnEdgeVertex(pixel1, edgeVertex)) && !(OnEdgeVertex(pixel2, edgeVertex)))) {
+            Pixel intersection = Intersection(pixel1, pixel2, edgeVertex);
+
+            clipped.push_back(intersection);
+        } else if (!(OnEdgeVertex(pixel1, edgeVertex)) && (OnEdgeVertex(pixel2, edgeVertex))) {
+            Pixel intersection = Intersection(pixel1, pixel2, edgeVertex);
+
+            clipped.push_back(intersection);
+            clipped.push_back(pixel2);
+        }
+
+        pixel1 = pixel2;
+    }
+
+    return clipped;
+}
+
+bool OnEdgeVertex(Pixel pixel, vec2 edgeVertex[]) {
+    /* Top edge */
+    if ((edgeVertex[1].x < edgeVertex[0].x) && (pixel.y >= edgeVertex[0].y)) {
+        return true;
+    }
+    /* Left edge */
+    else if ((edgeVertex[1].y > edgeVertex[0].y) && (pixel.x >= edgeVertex[0].x)) {
+        return true;
+    }
+    /* Right edge */
+    else if ((edgeVertex[1].y < edgeVertex[0].y) && (pixel.x <= edgeVertex[0].x)) {
+        return true;
+    }
+    /* Bottom edge */
+    else if ((edgeVertex[1].x > edgeVertex[0].x) && (pixel.y <= edgeVertex[0].y)) {
+        return true;
+    } else {
+        return false;
+    }
+}
+
+Pixel Intersection(Pixel pixel1, Pixel pixel2, vec2 edgeVertex[]) {
+    Pixel intersection;
+
+    /* Top edge */
+    if (edgeVertex[1].x < edgeVertex[0].x) {
+        float diff = (2 * pixel1.viewPosition.y + pixel1.viewPosition.z) /
+                     ((2 * pixel1.viewPosition.y + pixel1.viewPosition.z) - (2 * pixel2.viewPosition.y + pixel2.viewPosition.z));
+        intersection.viewPosition = ((1 - diff) * pixel1.viewPosition) + (diff * pixel2.viewPosition);
+        intersection.pos3d = ((1 - diff) * pixel1.pos3d) + (diff * pixel2.pos3d);
+    }
+    /* Bottom edge*/
+    else if (edgeVertex[1].x > edgeVertex[0].x) {
+        float diff = (2 * pixel1.viewPosition.y - pixel1.viewPosition.z) /
+                ((2 * pixel1.viewPosition.y - pixel1.viewPosition.z) - (2 * pixel2.viewPosition.y - pixel2.viewPosition.z));
+        intersection.viewPosition = ((1 - diff) * pixel1.viewPosition) + (diff * pixel2.viewPosition);
+        intersection.pos3d = ((1 - diff) * pixel1.pos3d) + (diff * pixel2.pos3d);
+    }
+    /* Left edge */
+    else if (edgeVertex[1].y > edgeVertex[0].y) {
+        float diff = (2 * pixel1.viewPosition.x + pixel1.viewPosition.z) /
+                     ((2 * pixel1.viewPosition.x + pixel1.viewPosition.z) - (2 * pixel2.viewPosition.x + pixel2.viewPosition.z));
+        intersection.viewPosition = ((1 - diff) * pixel1.viewPosition) + (diff * pixel2.viewPosition);
+        intersection.pos3d = ((1 - diff) * pixel1.pos3d) + (diff * pixel2.pos3d);
+    }
+    /* Right edge*/
+    else if (edgeVertex[1].y < edgeVertex[0].y) {
+        float diff = (2 * pixel1.viewPosition.x - pixel1.viewPosition.z) /
+                     ((2 * pixel1.viewPosition.x - pixel1.viewPosition.z) - (2 * pixel2.viewPosition.x - pixel2.viewPosition.z));
+        intersection.viewPosition = ((1 - diff) * pixel1.viewPosition) + (diff * pixel2.viewPosition);
+        intersection.pos3d = ((1 - diff) * pixel1.pos3d) + (diff * pixel2.pos3d);
+    }
+
+    intersection.x = (int) (camera.focalLength * (intersection.viewPosition.x / intersection.viewPosition.z)) + (SCREEN_WIDTH / 2);
+    intersection.y = (int) (camera.focalLength * (intersection.viewPosition.y / intersection.viewPosition.z)) + (SCREEN_HEIGHT / 2);
+    intersection.zinv = 1.f / intersection.viewPosition.z;
+
+    return intersection;
 }
