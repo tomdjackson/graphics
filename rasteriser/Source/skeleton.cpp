@@ -12,15 +12,15 @@ using glm::vec3;
 using glm::mat3;
 using glm::vec4;
 using glm::mat4;
-using glm::ivec2;
 using glm::vec2;
+using glm::clamp;
 
 #define SCREEN_WIDTH 320
 #define SCREEN_HEIGHT 320
 #define FULLSCREEN_MODE false
 
 /*
- * STRUCTS
+ * STRUCTS & CONSTS
  */
 
 struct Camera {
@@ -45,21 +45,30 @@ struct Vertex {
 struct Light{
     vec4 pos;
     vec3 power;
-    vec3 indirectLightPowerPerArea;
+    vec3 ingradectLightPowerPerArea;
 };
 Light light;
 
 float depthBuffer[SCREEN_WIDTH][SCREEN_HEIGHT];
 
 mat4 identityMatrix = mat4(1.0f);
-
 const float rotationIncr = 0.1;
 const float translationIncr = 0.5;
-
+const float lightTranslationIncr = 0.1;
 vec4 currentNormal;
 vec3 currentReflectance;
 
 screen* sdlScreen;
+
+/* fxaa */
+
+vec3 colourBuffer[SCREEN_WIDTH][SCREEN_HEIGHT];
+const vec2 invScreen(1.0f / SCREEN_WIDTH, 1.0f / SCREEN_HEIGHT);
+const float edgeMin = 1.f / 8.f;
+const float edgeMax = 1.f / 128.f;
+const float gradScale = 2.5f;
+const float fxaaConst = 1.f / 6.f;
+const vec3 luma(0.299f, 0.587f, 0.114f);
 
 /*
  * FUNCTIONS
@@ -75,6 +84,8 @@ void InitialiseStructs();
 
 void InitialiseDepthBuffer();
 
+void InitialiseColourBuffer();
+
 void VertexShader(const Vertex& v, Pixel& p);
 
 void PixelShader(Pixel& p, vec3 color);
@@ -89,7 +100,11 @@ void DrawPolygonRows(const vector<Pixel>& leftPixels, const vector<Pixel> rightP
 
 void DrawPolygon(const vector<Vertex>& vertices);
 
-float CalcDist(vec4 a, vec4 b);
+vec3 getFromBuffer(vec2 point);
+
+vec3 getFromBuffer(float x, float y);
+
+vec3 fxaa(int x, int y);
 
 int main(int argc, char *argv[]) {
     sdlScreen = InitializeSDL(SCREEN_WIDTH, SCREEN_HEIGHT, FULLSCREEN_MODE);
@@ -115,8 +130,9 @@ void Draw(vector<Triangle>&triangles) {
     /* Clear buffer */
     memset(sdlScreen->buffer, 0, sdlScreen->height * sdlScreen->width * sizeof(uint32_t));
     InitialiseDepthBuffer();
+    InitialiseColourBuffer();
 
-    for (uint32_t i = 0; i<triangles.size(); ++i) {
+    for (int i = 0; i < triangles.size(); ++i) {
         vector<Vertex> vertices(3);
         vertices[0].position = triangles[i].v0;
         vertices[1].position = triangles[i].v1;
@@ -127,75 +143,81 @@ void Draw(vector<Triangle>&triangles) {
         DrawPolygon(vertices);
     }
 
+    for (int i = 0; i < SCREEN_WIDTH; i++) {
+        for (int j = 0; j < SCREEN_HEIGHT; j++) {
+//            PutPixelSDL(sdlScreen, i, j, colourBuffer[i][j]);
+            PutPixelSDL(sdlScreen, i, j, fxaa(i, j));
+        }
+    }
 }
 
 void Update() {
     static int t = SDL_GetTicks();
     /* Compute frame time */
     int t2 = SDL_GetTicks();
-    float dt = float(t2 - t);
+//    float dt = float(t2 - t);
     t = t2;
 
-    std::cout << "Render time: " << dt << " ms." << std::endl;
+//    std::cout << "Render time: " << dt << " ms." << std::endl;
 
     /* Update view */
     vec4 right(camera.R[0][0], camera.R[0][1], camera.R[0][2], 1);
     vec4 up(camera.R[1][0], camera.R[1][1], camera.R[1][2], 1);
     vec4 forward(camera.R[2][0], camera.R[2][1], camera.R[2][2], 1);
 
-    const Uint8 *keyPress = SDL_GetKeyboardState(0);
+    const Uint8 *keyState = SDL_GetKeyboardState(0);
     /* Camera position */
-    if (keyPress[SDL_SCANCODE_UP]) {
+    if (keyState[SDL_SCANCODE_UP]) {
         camera.position += translationIncr * up;
     }
-    if (keyPress[SDL_SCANCODE_DOWN]) {
+    if (keyState[SDL_SCANCODE_DOWN]) {
         camera.position -= translationIncr * up;
     }
-    if (keyPress[SDL_SCANCODE_O]) {
-        camera.position += translationIncr * forward;
+    if (keyState[SDL_SCANCODE_O]) {
+        camera.position += 0.1f * forward;
     }
-    if (keyPress[SDL_SCANCODE_K]) {
-        camera.position -= translationIncr * forward;
+    if (keyState[SDL_SCANCODE_K]) {
+        camera.position -= 0.1f * forward;
     }
-    if (keyPress[SDL_SCANCODE_RIGHT]) {
+    if (keyState[SDL_SCANCODE_RIGHT]) {
         camera.position += translationIncr * right;
     }
-    if (keyPress[SDL_SCANCODE_LEFT]) {
+    if (keyState[SDL_SCANCODE_LEFT]) {
         camera.position -= translationIncr * right;
     }
     /* Rotate left */
-    if (keyPress[SDL_SCANCODE_Q]) {
+    if (keyState[SDL_SCANCODE_Q]) {
         camera.position -= translationIncr * right;
         camera.yaw -= rotationIncr;
         Rotate();
     }
     /* Rotate right */
-    if (keyPress[SDL_SCANCODE_E]) {
+    if (keyState[SDL_SCANCODE_E]) {
         camera.yaw += rotationIncr;
         Rotate();
         camera.position += translationIncr * right;
     }
     /* Light position */
-    if (keyPress[SDL_SCANCODE_W]) {
-        light.pos.z += 0.1;
+    if (keyState[SDL_SCANCODE_W]) {
+        light.pos.z += lightTranslationIncr;
     }
-    if (keyPress[SDL_SCANCODE_S]) {
-        light.pos.z -= 0.1;
+    if (keyState[SDL_SCANCODE_S]) {
+        light.pos.z -= lightTranslationIncr;
     }
-    if (keyPress[SDL_SCANCODE_D]) {
-        light.pos.x += 0.1;
+    if (keyState[SDL_SCANCODE_D]) {
+        light.pos.x += lightTranslationIncr;
     }
-    if (keyPress[SDL_SCANCODE_A]) {
-        light.pos.x -= 0.1;
+    if (keyState[SDL_SCANCODE_A]) {
+        light.pos.x -= lightTranslationIncr;
     }
-    if (keyPress[SDL_SCANCODE_R]) {
-        light.pos.y += 0.1;
+    if (keyState[SDL_SCANCODE_R]) {
+        light.pos.y -= lightTranslationIncr;
     }
-    if (keyPress[SDL_SCANCODE_F]) {
-        light.pos.y -= 0.1;
+    if (keyState[SDL_SCANCODE_F]) {
+        light.pos.y += lightTranslationIncr;
     }
     /* Reset */
-    if (keyPress[SDL_SCANCODE_V]) {
+    if (keyState[SDL_SCANCODE_V]) {
         camera.position = vec4(0, 0, -3.001, 1);
         camera.yaw = 0;
         camera.R = identityMatrix;
@@ -220,13 +242,20 @@ void InitialiseStructs() {
     /* Lights */
     light.pos = vec4(0, -0.5, -0.7, 1);
     light.power = 34.f * vec3(1, 1, 1);
-    light.indirectLightPowerPerArea = 0.5f * vec3(1, 1, 1);
+    light.ingradectLightPowerPerArea = 0.5f * vec3(1, 1, 1);
 }
 
 void InitialiseDepthBuffer() {
     for(int i=0; i < SCREEN_WIDTH; i++)
         for(int j=0; j < SCREEN_HEIGHT; j++)
             depthBuffer[i][j] = -numeric_limits<int>::max();
+}
+
+void InitialiseColourBuffer() {
+    for(int i=0; i < SCREEN_WIDTH; i++)
+        for(int j=0; j < SCREEN_HEIGHT; j++) {
+            colourBuffer[i][j] = vec3(0.f, 0.f, 0.f);
+        }
 }
 
 void VertexShader(const Vertex& v, Pixel& pix) {
@@ -254,13 +283,13 @@ void PixelShader(Pixel& p) {
             float dist = glm::length(light.pos - p.pos3d);
             float area = 4.f * M_PI * (dist * dist);
             float dot = glm::dot(glm::normalize(currentNormal), r);
-            float max = glm::max(dot, 0.f);
-            float div = max / area;
+            float max_ = glm::max(dot, 0.f);
+            float div = max_ / area;
 
-            vec3 directLight = light.power * div;
-            vec3 illumination = (directLight + light.indirectLightPowerPerArea) * currentReflectance;
+            vec3 gradectLight = light.power * div;
+            vec3 illumination = (gradectLight + light.ingradectLightPowerPerArea) * currentReflectance;
 
-            PutPixelSDL(sdlScreen, x, y, illumination);
+            colourBuffer[x][y] = illumination;
             depthBuffer[x][y] = p.zinv;
         }
     }
@@ -372,9 +401,58 @@ void DrawPolygon(const vector<Vertex>& vertices) {
     DrawPolygonRows(leftPixels, rightPixels);
 }
 
-float CalcDist(vec4 a, vec4 b) {
-    float dx = b.x - a.x;
-    float dy = b.y - a.y;
-    float dz = b.z - a.z;
-    return sqrt((dx * dx) + (dy * dy) + (dz * dz));
+vec3 getFromBuffer(vec2 point) {
+    return getFromBuffer(point.x, point.y);
+}
+
+vec3 getFromBuffer(float x, float y) {
+    int width_ = SCREEN_WIDTH - 1;
+    int height_ = SCREEN_HEIGHT - 1;
+
+    int x_ = clamp((int) (clamp(x, 0.f, 1.f) * width_), 0, width_);
+    int y_ = clamp((int) (clamp(y, 0.f, 1.f) * height_), 0, height_);
+
+    return colourBuffer[x_][y_];
+}
+
+vec3 fxaa(int x, int y) {
+    vec2 point(((float) x / (float) SCREEN_WIDTH), ((float) y / (float) SCREEN_HEIGHT));
+
+    vec3 centre = getFromBuffer(point);
+    vec3 NW = getFromBuffer(point.x - invScreen.x, point.y - invScreen.y);
+    vec3 NE = getFromBuffer(point.x + invScreen.x, point.y - invScreen.y);
+    vec3 SW = getFromBuffer(point.x - invScreen.x, point.y + invScreen.y);
+    vec3 SE = getFromBuffer(point.x + invScreen.x, point.y + invScreen.y);
+
+    float lumaCentre = glm::dot(centre, luma);
+    float lumaNW = glm::dot(NW, luma);
+    float lumaNE = glm::dot(NE, luma);
+    float lumaSW = glm::dot(SW, luma);
+    float lumaSE = glm::dot(SE, luma);
+
+    float lumaMin = glm::min(lumaCentre, glm::min(lumaNW, glm::min(lumaNE, glm::min(lumaSW, lumaSE))));
+    float lumaMax = glm::max(lumaCentre, glm::max(lumaNW, glm::max(lumaNE, glm::max(lumaSW, lumaSE))));
+
+    float lumaNorthEdge = lumaNW + lumaNE;
+    float lumaSouthEdge = lumaSW + lumaSE;
+    float lumaWestEdge = lumaNW + lumaSW;
+    float lumaEastEdge = lumaNE + lumaSE;
+
+    vec2 grad(-(lumaNorthEdge - lumaSouthEdge), (lumaWestEdge - lumaEastEdge));
+    float temp = (lumaNW + lumaNE + lumaSW + lumaSE) * edgeMax * 0.25;
+    float gradThreshold = glm::max(temp, edgeMin);
+    float gradMin = 1.f / (glm::min(abs(grad.x), abs(grad.y)) + gradThreshold);
+
+    grad = vec2(glm::min(gradScale, glm::max(-gradScale, grad.x * gradMin)) * invScreen.x, glm::min(gradScale, glm::max(-gradScale, grad.y * gradMin)) * invScreen.y);
+
+    vec3 A = 0.5f * (getFromBuffer(point + (-fxaaConst * grad)) + getFromBuffer(point + (fxaaConst * grad)));
+    vec3 B = 0.5f * A + 0.25f * (getFromBuffer(point + (-0.5f * grad)) + getFromBuffer(point + (0.5f * grad)));
+
+    float lumaB = glm::dot(B, luma);
+
+    if (lumaB < lumaMin || lumaB > lumaMax) {
+        return A;
+    } else {
+        return B;
+    }
 }
