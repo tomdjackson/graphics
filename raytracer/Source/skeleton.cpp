@@ -10,15 +10,14 @@
 
 using namespace std;
 using std::vector;
-using std::unique_ptr;
-using std::ref;
 using glm::vec3;
 using glm::mat3;
 using glm::vec4;
 using glm::mat4;
+using glm::vec2;
 
-#define SCREEN_WIDTH 500
-#define SCREEN_HEIGHT 500
+#define SCREEN_WIDTH 400
+#define SCREEN_HEIGHT 400
 #define FULLSCREEN_MODE false
 #define PI 3.14159265
 
@@ -27,7 +26,6 @@ using glm::mat4;
 * 2. Phong shading
 * 3. General Models
 * 4. Textures
-* 5. Parallelism
 * 6. anti-aliasing
 * 7. water
 */
@@ -38,8 +36,9 @@ using glm::mat4;
 * 3. Glass
 * 4. Cramer's Rule
 * 5. Depth of Field
-* 6. Fresnel Effect ---- Needs Checking? Looks a bit strange
+* 6. Fresnel Effect
 * 7. Spheres
+* 8. Parallelism
 */
 
 /* ----------------------------------------------------------------------------*/
@@ -91,6 +90,9 @@ float fresnel(vec4 normal, vec4 dir, const Intersection& i, float& n, float& k);
 mat4 y_rotation(float deg);
 void RandCameraPoints(vector<vec4> &points);
 void RandLightPoints(vector<vec4> &points);
+vec3 fxaa(int x, int y);
+vec3 getFromBuffer(float x, float y);
+vec3 getFromBuffer(vec2 point);
 
 /* ----------------------------------------------------------------------------*/
 
@@ -121,11 +123,11 @@ void InitializeStructs(){
 
   /* Light */
   light.position = vec4( 0, - 0.5, -0.7, 1.0 );
-  light.color = 14.f * vec3( 1, 1, 1 );
+  light.color = 8.f * vec3( 1, 1, 1 );
   light.width = 0.2f;
 
   /* Options */
-  options.max_depth = 20;
+  options.max_depth = 10;
   options.num_dof_rays = 1;
   options.num_light_rays = 1;
 }
@@ -174,16 +176,16 @@ vec3 DirectLight( const Intersection& i){
 
     Intersection intersection;
     //in shadow
-    if (ClosestIntersection(i.position + 0.001f*r, r, intersection) && (length_r >= intersection.distance)){
+    if (ClosestIntersection(i.position + 0.0001f*r, r, intersection) && (length_r > intersection.distance)){
       //glass shadow
       if (objects[intersection.objectIndex]->material == Glass){
         float A = 4*PI*length_r*length_r;
         vec3 B = light.color / A;
-        vec4 normal = objects[intersection.objectIndex]->computeNormal( intersection.position );
+        vec4 normal = objects[i.objectIndex]->computeNormal( i.position );
         float C = glm::dot(r, normal);
         C = glm::max(C, 0.f);
 
-        D += 0.3f * (B * C);
+        D += (B * C) * 0.8f;
       }
       else D += vec3(0,0,0);
     }
@@ -207,7 +209,7 @@ vec4 reflect(vec4 normal, vec4 dir){
 
 vec4 refract (vec4 normal, vec4 dir, float& n, float& k){
   float cosi = glm::clamp(-1.f,1.f,glm::dot(dir, normal));
-  float n1 = 1, n2 = 1.5;
+  float n1 = 1.5f, n2 = 1.f;
   if (cosi < 0) cosi = -cosi;
   else {
     std::swap(n1, n2);
@@ -221,8 +223,7 @@ vec4 refract (vec4 normal, vec4 dir, float& n, float& k){
 float fresnel(vec4 normal, vec4 dir, float& n, float& k){
   float kr = 0.0f;
   float dot = glm::clamp(1.f,1.f,glm::dot(normal, dir));
-  float n1 = 1.5f;
-  float n2 = 1.0f;
+  float n1 = 1.5f, n2 = 1.f;
   if(dot > 0) std::swap(n1, n2);
   n = n1/n2;
   k = n * sqrt(std::max(0.f, 1-dot*dot));
@@ -249,8 +250,9 @@ vec3 get_color(const Intersection& i, vec4 dir, int depth ){
     //reflect all light
     vec4 new_dir = reflect(objects[i.objectIndex]->computeNormal( i.position ), dir);
     Intersection closestIntersection;
-    if(ClosestIntersection(i.position+(0.001f*new_dir), new_dir, closestIntersection)){
-      return 0.8f * get_color(closestIntersection, new_dir, depth + 1);
+    if(ClosestIntersection(i.position+(0.00001f*new_dir), new_dir, closestIntersection)){
+      depth++;
+      return 0.8f * get_color(closestIntersection, new_dir, depth);
     }
     else return vec3(0,0,0);
   }
@@ -265,7 +267,7 @@ vec3 get_color(const Intersection& i, vec4 dir, int depth ){
     if(kr < 1){
       vec4 refract_dir = refract(normal, dir, n, k);
       Intersection closestIntersection;
-      if(ClosestIntersection(i.position+(0.0001f*refract_dir), refract_dir, closestIntersection)){
+      if(ClosestIntersection(i.position+(0.00001f*refract_dir), refract_dir, closestIntersection)){
         refract_color = 0.8f * get_color(closestIntersection, refract_dir, depth+1);
       }
       else refract_color = vec3(0,0,0);
@@ -273,7 +275,7 @@ vec3 get_color(const Intersection& i, vec4 dir, int depth ){
     vec4 reflect_dir = reflect(normal, dir);
     vec3 reflect_color = vec3(0,0,0);
     Intersection intersection;
-    if(ClosestIntersection(i.position+(0.0001f*reflect_dir), reflect_dir, intersection)){
+    if(ClosestIntersection(i.position+(0.00001f*reflect_dir), reflect_dir, intersection)){
       reflect_color = 0.8f * get_color(intersection, reflect_dir, depth + 1);
     }
     return (reflect_color * kr) + (refract_color*(1-kr));
@@ -301,13 +303,15 @@ void Draw(screen* screen){
   vector<vec4> points;
   RandCameraPoints(points);
 
+  #pragma omp parallel for
   for(int x = 0; x<SCREEN_WIDTH; x++){
     for(int y = 0; y<SCREEN_HEIGHT; y++){
       vec3 color = vec3( 0, 0, 0 );
       Intersection closestIntersection;
       for(int i = 0; i < points.size(); i++){
         vec4 dir = y_rotation(camera.angle) * vec4(x-SCREEN_WIDTH/2, y-SCREEN_HEIGHT/2, camera.focalLength, 1);
-        vec4 ray_intersection = points[i] + (dir * camera.dof_length);
+        vec4 ray_intersection = camera.position + (dir * camera.dof_length);
+        ray_intersection.w = 1.f;
         dir = ray_intersection - points[i];
 
         if (ClosestIntersection(points[i], dir, closestIntersection)){
@@ -382,7 +386,6 @@ void Update(){
   if( keystate[SDL_SCANCODE_W] ){
     light.position.z += 0.1;
   }
-
 }
 
 mat4 y_rotation(float angle){

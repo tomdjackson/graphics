@@ -55,7 +55,7 @@ public:
     float c = glm::dot(L, L) - radius2;
     if (!solveQuadratic(a, b, c, t0, t1)) return false;
 
-    if (t0 > t1) std::swap(t0, t1); 
+    if (t0 > t1) std::swap(t0, t1);
 
     if (t0 < 0) {
       t0 = t1;
@@ -198,7 +198,8 @@ void LoadTestModel( std::vector<Object*>& objects )
   vec4 H(0,L,L,1);
 
   //Spheres
-  objects.push_back( new Sphere(glm::vec4(-1,0,0,1), 0.35, red, Diff));
+  objects.push_back( new Sphere(glm::vec4(-1,0,0,1), 0.35, red, Spec));
+  objects.push_back( new Sphere(glm::vec4(0,0,0,1), 0.25, red, Glass));
 
   // Floor:
   objects.push_back( new Triangle( C, B, A, green, Diff ));
@@ -234,24 +235,24 @@ void LoadTestModel( std::vector<Object*>& objects )
   H = vec4( 82,165,225,1);
 
   // Front
-  objects.push_back( new Triangle(E,B,A,red, Glass)) ;
-  objects.push_back( new Triangle(E,F,B,red, Glass)) ;
+  objects.push_back( new Triangle(E,B,A,red, Diff)) ;
+  objects.push_back( new Triangle(E,F,B,red, Diff)) ;
 
   // Front
-  objects.push_back( new Triangle(F,D,B,red, Glass)) ;
-  objects.push_back( new Triangle(F,H,D,red, Glass)) ;
+  objects.push_back( new Triangle(F,D,B,red, Diff)) ;
+  objects.push_back( new Triangle(F,H,D,red, Diff)) ;
 
   // BACK
-  objects.push_back( new Triangle(H,C,D,red, Glass)) ;
-  objects.push_back( new Triangle(H,G,C,red, Glass)) ;
+  objects.push_back( new Triangle(H,C,D,red, Diff)) ;
+  objects.push_back( new Triangle(H,G,C,red, Diff)) ;
 
   // LEFT
-  objects.push_back( new Triangle(G,E,C,red, Glass)) ;
-  objects.push_back( new Triangle(E,A,C,red, Glass)) ;
+  objects.push_back( new Triangle(G,E,C,red, Diff)) ;
+  objects.push_back( new Triangle(E,A,C,red, Diff)) ;
 
   // TOP
-  objects.push_back( new Triangle(G,F,E,red, Glass)) ;
-  objects.push_back( new Triangle(G,H,F,red, Glass)) ;
+  objects.push_back( new Triangle(G,F,E,red, Diff)) ;
+  objects.push_back( new Triangle(G,H,F,red, Diff)) ;
 
   // ---------------------------------------------------------------------------
   // Tall block
@@ -267,24 +268,24 @@ void LoadTestModel( std::vector<Object*>& objects )
   H = vec4(314,330,456,1);
 
   // Front
-  objects.push_back( new Triangle(E,B,A,blue, Diff) );
-  objects.push_back( new Triangle(E,F,B,blue, Diff) );
+  objects.push_back( new Triangle(E,B,A,blue, Glass) );
+  objects.push_back( new Triangle(E,F,B,blue, Glass) );
 
   // Front
-  objects.push_back( new Triangle(F,D,B,blue, Diff) );
-  objects.push_back( new Triangle(F,H,D,blue, Diff) );
+  objects.push_back( new Triangle(F,D,B,blue, Glass) );
+  objects.push_back( new Triangle(F,H,D,blue, Glass) );
 
   // BACK
-  objects.push_back( new Triangle(H,C,D,blue, Diff) );
-  objects.push_back( new Triangle(H,G,C,blue, Diff) );
+  objects.push_back( new Triangle(H,C,D,blue, Glass) );
+  objects.push_back( new Triangle(H,G,C,blue, Glass) );
 
   // LEFT
-  objects.push_back( new Triangle(G,E,C,blue, Diff) );
-  objects.push_back( new Triangle(E,A,C,blue, Diff) );
+  objects.push_back( new Triangle(G,E,C,blue, Glass) );
+  objects.push_back( new Triangle(E,A,C,blue, Glass) );
 
   // TOP
-  objects.push_back( new Triangle(G,F,E,blue, Diff) );
-  objects.push_back( new Triangle(G,H,F,blue, Diff) );
+  objects.push_back( new Triangle(G,F,E,blue, Glass) );
+  objects.push_back( new Triangle(G,H,F,blue, Glass) );
 
 
   // ----------------------------------------------

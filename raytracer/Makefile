@@ -10,9 +10,9 @@ B_DIR=Build
 EXEC=$(B_DIR)/$(FILE)
 
 # default build settings
-CC_OPTS=-c -pipe -Wall -Wno-switch -ggdb -g3 -O3
+CC_OPTS=-c -pipe -Wall -Wsign-compare -Wno-switch -ggdb -O3
 LN_OPTS=
-CC=g++
+CC=g++-7 -fopenmp
 
 ########
 #       SDL options
@@ -30,12 +30,10 @@ all:Build
 #
 OBJ = $(B_DIR)/$(FILE).o
 
-
 ########
 #   Objects
 $(B_DIR)/$(FILE).o : $(S_DIR)/$(FILE).cpp $(S_DIR)/SDLauxiliary.h $(S_DIR)/TestModelH.h
 	$(CC) $(CC_OPTS) -o $(B_DIR)/$(FILE).o $(S_DIR)/$(FILE).cpp $(SDL_CFLAGS) $(GLM_CFLAGS)
-
 
 ########
 #   Main build rule
