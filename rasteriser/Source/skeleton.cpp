@@ -18,7 +18,8 @@ using glm::clamp;
 #define SCREEN_HEIGHT 500
 #define SCREEN_WIDTH 500
 #define FULLSCREEN_MODE false
-#define CLIP 1
+#define CLIP true
+#define SHADOWS true
 
 /*
  * STRUCTS & CONSTS
@@ -37,9 +38,7 @@ struct Pixel {
     float zinv;
     vec4 pos3d;
     vec4 cameraPosition;
-//    int lx, ly;
-//    float lzinv;
-    float isLit = 0.f;
+    float isLit = 1.f;
 };
 
 struct Vertex {
@@ -50,7 +49,7 @@ struct Light{
     vec4 pos;
     vec3 power;
     vec3 indirectLightPowerPerArea;
-    mat4 R;
+    float focalLength;
 };
 Light light;
 
@@ -84,7 +83,7 @@ void Update();
 
 void Draw(vector<Triangle>& triangles);
 
-void Rotate();
+void Rotate(Camera& camera_);
 
 void InitialiseStructs();
 
@@ -118,7 +117,11 @@ bool OnEdge(Pixel pixel, vec2 edgeBounds[]);
 
 void Intermediate(Pixel pixel1, Pixel pixel2, vec2 edgeBounds[], Pixel& intermediate);
 
-void ShadowShader(Pixel& p);
+void DrawShadows(const vector<Vertex>& vertices);
+
+void ShadowRows(const vector<Pixel>& leftPixels, const vector<Pixel> rightPixels);
+
+void LightVertexShader(const Vertex& v, Pixel& p);
 
 int main(int argc, char *argv[]) {
     sdlScreen = InitializeSDL(SCREEN_WIDTH, SCREEN_HEIGHT, FULLSCREEN_MODE);
@@ -145,6 +148,19 @@ void Draw(vector<Triangle>&triangles) {
     memset(sdlScreen->buffer, 0, sdlScreen->height * sdlScreen->width * sizeof(uint32_t));
     InitialiseBuffers();
 
+    if (SHADOWS) {
+        for (int i = 0; i < triangles.size(); ++i) {
+            vector<Vertex> vertices(3);
+            vertices[0].position = triangles[i].v0;
+            vertices[1].position = triangles[i].v1;
+            vertices[2].position = triangles[i].v2;
+            currentNormal = triangles[i].normal;
+            currentReflectance = triangles[i].color;
+
+            DrawShadows(vertices);
+        }
+    }
+
     for (int i = 0; i < triangles.size(); ++i) {
         vector<Vertex> vertices(3);
         vertices[0].position = triangles[i].v0;
@@ -153,7 +169,7 @@ void Draw(vector<Triangle>&triangles) {
         currentNormal = triangles[i].normal;
         currentReflectance = triangles[i].color;
 
-        DrawPolygon(vertices); // lightvertex, computePR, drawPR (only interpolate and fill light buffer)
+        DrawPolygon(vertices);
     }
 
     for (int y = 0; y < SCREEN_HEIGHT; y++) {
@@ -200,12 +216,12 @@ void Update() {
     /* Rotate left */
     if (keyState[SDL_SCANCODE_Q]) {
         camera.yaw -= rotationIncr;
-        Rotate();
+        Rotate(camera);
     }
     /* Rotate right */
     if (keyState[SDL_SCANCODE_E]) {
         camera.yaw += rotationIncr;
-        Rotate();
+        Rotate(camera);
     }
     /* Light position */
     if (keyState[SDL_SCANCODE_W]) {
@@ -232,11 +248,11 @@ void Update() {
     }
 }
 
-void Rotate() {
-    camera.R[0][0] = cos(camera.yaw);
-    camera.R[0][2] = sin(camera.yaw);
-    camera.R[2][0] = -sin(camera.yaw);
-    camera.R[2][2] = cos(camera.yaw);
+void Rotate(Camera& camera_) {
+    camera.R[0][0] = cos(camera_.yaw);
+    camera.R[0][2] = sin(camera_.yaw);
+    camera.R[2][0] = -sin(camera_.yaw);
+    camera.R[2][2] = cos(camera_.yaw);
 }
 
 void InitialiseStructs() {
@@ -247,10 +263,15 @@ void InitialiseStructs() {
     camera.R = identityMatrix;
 
     /* Lights */
-    light.pos = vec4(0, -0.5, -0.5, 1);
-    light.power = 14.f * vec3(1, 1, 1);
+    if(SHADOWS) {
+        light.pos = vec4(0.5f, 0.5f, -4.f, 1.f);
+        light.power = 100.f * vec3(1, 1, 1);
+    } else {
+        light.pos = vec4(0.f, -0.5f, -0.7f, 1.f);
+        light.power = 11.f * vec3(1, 1, 1);
+    }
     light.indirectLightPowerPerArea = 0.5f * vec3(1, 1, 1);
-    light.R = identityMatrix;
+    light.focalLength = SCREEN_HEIGHT;
 }
 
 void InitialiseBuffers() {
@@ -264,15 +285,11 @@ void InitialiseBuffers() {
 
 void VertexShader(const Vertex& v, Pixel& pix) {
     pix.cameraPosition = (v.position - camera.position) * camera.R;
-//    vec4 lightPosition = (v.position - light.pos) * light.R;
 
     pix.x = (int) (camera.focalLength * (pix.cameraPosition.x / pix.cameraPosition.z)) + (SCREEN_WIDTH / 2);
     pix.y = (int) (camera.focalLength * (pix.cameraPosition.y / pix.cameraPosition.z)) + (SCREEN_HEIGHT / 2);
-//    pix.lx = (int) (camera.focalLength * (lightPosition.x / lightPosition.z)) + (SCREEN_WIDTH / 2);
-//    pix.ly = (int) (camera.focalLength * (lightPosition.y / lightPosition.z)) + (SCREEN_HEIGHT / 2);
 
     pix.zinv = 1.f / pix.cameraPosition.z;
-//    pix.lzinv = 1.f / lightPosition.z;
     pix.pos3d = v.position;
 }
 
@@ -280,10 +297,21 @@ void PixelShader(Pixel& p) {
     int x = p.x;
     int y = p.y;
     float zinv = p.zinv;
-    bool pixelInBox = ((x >= 0) && (x < SCREEN_WIDTH) && (y >= 0)  && (y < SCREEN_HEIGHT));
 
-    if (pixelInBox) {
-        if (zinv > depthBuffer[y][x]) {
+    if (SHADOWS) {
+        vec4 lightPosition = (p.pos3d - light.pos);
+        int lx = (int) (camera.focalLength * (lightPosition.x / lightPosition.z)) + (SCREEN_WIDTH / 2);
+        int ly = (int) (camera.focalLength * (lightPosition.y / lightPosition.z)) + (SCREEN_HEIGHT / 2);
+        float lzinv = 1.f / lightPosition.z;
+        if ((lzinv + 0.01f) <= lightBuffer[ly][lx]) {
+            p.isLit = 0.f;
+        }
+    }
+
+    vec3 illumination = light.indirectLightPowerPerArea * currentReflectance;
+
+    if (zinv >= depthBuffer[y][x]) {
+        if (p.isLit == 1.f) {
             vec4 r = glm::normalize(light.pos - p.pos3d);
             float dist = glm::length(light.pos - p.pos3d);
             float invArea = 1.f / (4.f * M_PI * (dist * dist));
@@ -292,11 +320,11 @@ void PixelShader(Pixel& p) {
             float div = max_ * invArea;
 
             vec3 directLight = light.power * div;
-            vec3 illumination = (directLight + light.indirectLightPowerPerArea) * currentReflectance;
-
-            colourBuffer[y][x] = illumination;
-            depthBuffer[y][x] = zinv;
+            illumination = (directLight + light.indirectLightPowerPerArea) * currentReflectance;
         }
+
+        colourBuffer[y][x] = illumination;
+        depthBuffer[y][x] = zinv;
     }
 }
 
@@ -390,7 +418,9 @@ void DrawPolygonRows(const vector<Pixel>& leftPixels, const vector<Pixel> rightP
             vector<Pixel> line(pixels);
             Interpolate(a, b, line);
             for (int j = 0; j < pixels; j++) {
-                PixelShader(line[j]);
+                Pixel pix = line[j];
+                bool pixelInBox = ((pix.x >= 0) && (pix.x < SCREEN_WIDTH) && (pix.y >= 0)  && (pix.y < SCREEN_HEIGHT));
+                if (pixelInBox) PixelShader(line[j]);
             }
         }
     }
@@ -403,7 +433,7 @@ void DrawPolygon(const vector<Vertex>& vertices) {
     for(int i=0; i<V; ++i) VertexShader(vertices[i], vertexPixels[i]);
 
     /* Polygon Clipping */
-    if (CLIP == 1) ClipPolygon(vertexPixels);
+    if (CLIP) ClipPolygon(vertexPixels);
 
     vector<Pixel> leftPixels;
     vector<Pixel> rightPixels;
@@ -626,4 +656,53 @@ void Intermediate(Pixel pixel1, Pixel pixel2, vec2 edgeBounds[], Pixel& intermed
     intermediate.x = (int) (camera.focalLength * (intermediate.cameraPosition.x / intermediate.cameraPosition.z)) + (SCREEN_HEIGHT / 2);
     intermediate.y = (int) (camera.focalLength * (intermediate.cameraPosition.y / intermediate.cameraPosition.z)) + (SCREEN_WIDTH / 2);
     intermediate.zinv = 1.f / intermediate.cameraPosition.z;
+}
+
+void DrawShadows(const vector<Vertex>& vertices) {
+    int V = vertices.size();
+    vector<Pixel> vertexPixels(V);
+
+    for(int i=0; i<V; ++i) LightVertexShader(vertices[i], vertexPixels[i]);
+
+    vector<Pixel> leftPixels;
+    vector<Pixel> rightPixels;
+
+    ComputePolygonRows(vertexPixels, leftPixels, rightPixels);
+    ShadowRows(leftPixels, rightPixels);
+}
+
+void LightVertexShader(const Vertex& v, Pixel& pix) {
+    vec4 lightPosition = (v.position - light.pos);
+
+    pix.x = (int) (light.focalLength * (lightPosition.x / lightPosition.z)) + (SCREEN_WIDTH / 2);
+    pix.y = (int) (light.focalLength * (lightPosition.y / lightPosition.z)) + (SCREEN_HEIGHT / 2);
+    pix.zinv = 1.f / lightPosition.z;
+}
+
+void ShadowRows(const vector<Pixel>& leftPixels, const vector<Pixel> rightPixels) {
+    int numPix = leftPixels.size();
+
+    for (int i = 0; i < numPix; i++) {
+        if (leftPixels[i].y >= 0 && leftPixels[i].y < SCREEN_WIDTH) {
+            Pixel a = leftPixels[i];
+            Pixel b = rightPixels[i];
+            int delta_x = abs(a.x - b.x);
+            int delta_y = abs(a.y - b.y);
+            int pixels = glm::max(delta_x, delta_y) + 1;
+            vector<Pixel> line(pixels);
+            Interpolate(a, b, line);
+
+            for (int j = 0; j < pixels; j++) {
+                Pixel pix = line[j];
+                int x = pix.x;
+                int y = pix.y;
+                float zinv = pix.zinv;
+                bool pixelInBox = ((x >= 0) && (x < SCREEN_WIDTH) && (y >= 0)  && (y < SCREEN_HEIGHT));
+
+                if (pixelInBox && (zinv >= lightBuffer[y][x])) {
+                    lightBuffer[y][x] = zinv;
+                }
+            }
+        }
+    }
 }
