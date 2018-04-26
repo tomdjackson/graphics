@@ -311,6 +311,7 @@ void PixelShader(Pixel& p) {
     vec3 illumination = light.indirectLightPowerPerArea * currentReflectance;
 
     if (zinv >= depthBuffer[y][x]) {
+
         if (p.isLit == 1.f) {
             vec4 r = glm::normalize(light.pos - p.pos3d);
             float dist = glm::length(light.pos - p.pos3d);
@@ -334,12 +335,12 @@ void Interpolate(Pixel a, Pixel b, vector<Pixel>& result) {
     vec3 current(a.x, a.y, a.zinv);
     vec4 currentPos = a.pos3d * a.zinv;
 
-    float div = float(glm::max(N - 1, 1));
+    float div = 1.f / float(glm::max(N - 1, 1));
     vec3 step;
-    step.x = (b.x - a.x) / div;
-    step.y = (b.y - a.y) / div;
-    step.z = (b.zinv - a.zinv) / div;
-    vec4 posStep = (b.pos3d * b.zinv - a.pos3d * a.zinv) / div;
+    step.x = (b.x - a.x) * div;
+    step.y = (b.y - a.y) * div;
+    step.z = (b.zinv - a.zinv) * div;
+    vec4 posStep = (b.pos3d * b.zinv - a.pos3d * a.zinv) * div;
 
     for (int i = 0; i < N; i++) {
         Pixel pix;
