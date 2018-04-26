@@ -15,9 +15,10 @@ using glm::mat4;
 using glm::vec2;
 using glm::clamp;
 
-#define SCREEN_HEIGHT 500
-#define SCREEN_WIDTH 500
+#define SCREEN_HEIGHT 700
+#define SCREEN_WIDTH 700
 #define FULLSCREEN_MODE false
+#define USE_FXAA true
 #define CLIP true
 #define SHADOWS true
 
@@ -174,7 +175,11 @@ void Draw(vector<Triangle>&triangles) {
 
     for (int y = 0; y < SCREEN_HEIGHT; y++) {
         for (int x = 0; x < SCREEN_WIDTH; x++) {
-            PutPixelSDL(sdlScreen, x, y, FXAA(x, y));
+            if (USE_FXAA) {
+                PutPixelSDL(sdlScreen, x, y, FXAA(x, y));
+            } else {
+                PutPixelSDL(sdlScreen, x, y, colourBuffer[y][x]);
+            }
         }
     }
 }
@@ -308,9 +313,8 @@ void PixelShader(Pixel& p) {
         }
     }
 
-    vec3 illumination = light.indirectLightPowerPerArea * currentReflectance;
-
     if (zinv >= depthBuffer[y][x]) {
+        vec3 illumination = light.indirectLightPowerPerArea * currentReflectance;
 
         if (p.isLit == 1.f) {
             vec4 r = glm::normalize(light.pos - p.pos3d);
