@@ -15,8 +15,8 @@ using glm::mat4;
 using glm::vec2;
 using glm::clamp;
 
-#define SCREEN_HEIGHT 700
-#define SCREEN_WIDTH 700
+#define SCREEN_HEIGHT 500
+#define SCREEN_WIDTH 500
 #define FULLSCREEN_MODE false
 #define USE_FXAA true
 #define CLIP true
@@ -39,7 +39,7 @@ struct Pixel {
     float zinv;
     vec4 pos3d;
     vec4 cameraPosition;
-    float isLit = 1.f;
+    bool isLit = true;
 };
 
 struct Vertex {
@@ -150,6 +150,7 @@ void Draw(vector<Triangle>&triangles) {
     InitialiseBuffers();
 
     if (SHADOWS) {
+
         for (int i = 0; i < triangles.size(); ++i) {
             vector<Vertex> vertices(3);
             vertices[0].position = triangles[i].v0;
@@ -280,6 +281,7 @@ void InitialiseStructs() {
 }
 
 void InitialiseBuffers() {
+
     for(int y = 0; y < SCREEN_HEIGHT; y++)
         for(int x = 0; x < SCREEN_WIDTH; x++) {
             depthBuffer[y][x] = -numeric_limits<int>::max();
@@ -309,14 +311,14 @@ void PixelShader(Pixel& p) {
         int ly = (int) (camera.focalLength * (lightPosition.y / lightPosition.z)) + (SCREEN_HEIGHT / 2);
         float lzinv = 1.f / lightPosition.z;
         if ((lzinv + 0.01f) <= lightBuffer[ly][lx]) {
-            p.isLit = 0.f;
+            p.isLit = false;
         }
     }
 
     if (zinv >= depthBuffer[y][x]) {
         vec3 illumination = light.indirectLightPowerPerArea * currentReflectance;
 
-        if (p.isLit == 1.f) {
+        if (p.isLit) {
             vec4 r = glm::normalize(light.pos - p.pos3d);
             float dist = glm::length(light.pos - p.pos3d);
             float invArea = 1.f / (4.f * M_PI * (dist * dist));
@@ -370,6 +372,7 @@ void ComputePolygonRows(const vector<Pixel>& vertexPixels, vector<Pixel>& leftPi
 
     int vPSize = vertexPixels.size();
 
+
     for (int i = 0; i < vPSize; i++) {
         if (vertexPixels[i].y > max_y) {
             max_y = vertexPixels[i].y;
@@ -422,6 +425,7 @@ void DrawPolygonRows(const vector<Pixel>& leftPixels, const vector<Pixel> rightP
             int pixels = glm::max(delta_x, delta_y) + 1;
             vector<Pixel> line(pixels);
             Interpolate(a, b, line);
+
             for (int j = 0; j < pixels; j++) {
                 Pixel pix = line[j];
                 bool pixelInBox = ((pix.x >= 0) && (pix.x < SCREEN_WIDTH) && (pix.y >= 0)  && (pix.y < SCREEN_HEIGHT));
